@@ -1,0 +1,1563 @@
+﻿use std::cell::RefCell;
+use std::collections::{HashMap, HashSet};
+use std::io::Write;
+use std::rc::Rc;
+
+use kolom_syntax::ast::*;
+
+use kolom_lexer::bn_num;
+
+#[derive(Debug)]
+pub struct InterpError {
+    pub line: u32,
+    pub col: u32,
+    pub message: String,
+}
+
+fn err(pos: Pos, message: impl Into<String>) -> InterpError {
+    InterpError {
+        line: pos.line,
+        col: pos.col,
+        message: message.into(),
+    }
+}
+
+#[derive(Clone)]
+pub enum Value {
+    Num(i64),
+    Dec(f64),
+    Txt(String),
+    Bool(bool),
+    Ch(char),
+    Null,
+    Arr(Rc<RefCell<Vec<Value>>>),
+    Shared(Rc<RefCell<Value>>),
+    Map(Rc<RefCell<HashMap<String, Value>>>),
+}
+
+impl std::fmt::Display for Value {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Value::Num(n) => write!(f, "{}", n),
+            Value::Dec(d) => write!(f, "{}", d),
+            Value::Txt(s) => write!(f, "{}", s),
+            Value::Bool(b) => write!(f, "{}", if *b { "সত্য" } else { "মিথ্যা" }),
+            Value::Ch(c) => write!(f, "{}", c),
+            Value::Null => write!(f, "ফাঁকা"),
+            Value::Arr(a) => {
+                write!(f, "[")?;
+                let v = a.borrow();
+                for (i, x) in v.iter().enumerate() {
+                    if i > 0 {
+                        write!(f, ", ")?;
+                    }
+                    write!(f, "{}", x)?;
+                }
+                write!(f, "]")
+            }
+            Value::Shared(s) => write!(f, "{}", s.borrow()),
+            Value::Map(m) => {
+                write!(f, "{{")?;
+                let v = m.borrow();
+                for (i, (k, val)) in v.iter().enumerate() {
+                    if i > 0 {
+                        write!(f, ", ")?;
+                    }
+                    write!(f, "\"{}\": {}", k, val)?;
+                }
+                write!(f, "}}")
+            }
+        }
+    }
+}
+
+enum CF {
+    Normal,
+    Break,
+    Continue,
+    Ret(Value),
+}
+
+struct Scope {
+    vars: HashMap<String, Value>,
+    consts: HashSet<String>,
+}
+
+impl Scope {
+    fn new() -> Scope {
+        Scope {
+            vars: HashMap::new(),
+            consts: HashSet::new(),
+        }
+    }
+}
+
+struct Interp<'o> {
+    funcs: HashMap<String, Rc<FuncDecl>>,
+    scopes: Vec<Scope>,
+    out: &'o mut dyn Write,
+    rng: u64,
+    net: HashMap<u32, std::net::TcpStream>,
+    net_next: u32,
+    structs: HashMap<String, Vec<String>>,
+}
+
+pub fn run(prog: &Program, out: &mut dyn Write) -> Result<(), InterpError> {
+    let seed_ms = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map(|d| d.as_millis() as u64)
+        .unwrap_or(0x9E3779B97F4A7C15);
+    let mut it = Interp {
+        funcs: HashMap::new(),
+        scopes: vec![Scope::new()],
+        out,
+        rng: 0x2545F4914F6CDD1D ^ seed_ms,
+        net: HashMap::new(),
+        net_next: 1,
+        structs: HashMap::new(),
+    };
+    for s in &prog.structs {
+        let field_names: Vec<String> = s.fields.iter().map(|(n, _)| n.name.clone()).collect();
+        it.structs.insert(s.name.name.clone(), field_names);
+    }
+    for f in &prog.funcs {
+        if it
+            .funcs
+            .insert(f.name.name.clone(), Rc::clone(f))
+            .is_some()
+        {
+            return Err(err(
+                f.name.pos,
+                format!("দুটি ফাংশনের একই নাম — '{}'", f.name.name),
+            ));
+        }
+    }
+    for c in &prog.consts {
+        let v = it.eval(&c.init)?;
+        it.define(&c.name.name, v, true, c.name.pos)?;
+    }
+    let app = match &prog.app {
+        Some(a) => a,
+        None => {
+            return Err(err(
+                Pos { line: 1, col: 1 },
+                "কোনো 'অ্যাপ' ডিক্লারেশন পাওয়া যায়নি",
+            ))
+        }
+    };
+    it.scopes.push(Scope::new());
+    let cf = it.exec_block(&app.body)?;
+    it.scopes.pop();
+    match cf {
+        CF::Ret(_) => Err(err(Pos { line: 1, col: 1 }, "ফাংশনের বাইরে 'ফেরাও'")),
+        _ => Ok(()),
+    }
+}
+
+impl<'o> Interp<'o> {
+    fn scope(&mut self) -> &mut Scope {
+        self.scopes.last_mut().unwrap()
+    }
+
+    fn define(&mut self, name: &str, val: Value, is_const: bool, pos: Pos) -> Result<(), InterpError> {
+        let s = self.scope();
+        if s.vars.contains_key(name) {
+            return Err(err(pos, format!("'{}' এই স্কোপে আগেই ঘোষিত", name)));
+        }
+        if is_const {
+            s.consts.insert(name.to_string());
+        }
+        s.vars.insert(name.to_string(), val);
+        Ok(())
+    }
+
+    fn lookup(&self, name: &str) -> Option<Value> {
+        for s in self.scopes.iter().rev() {
+            if let Some(v) = s.vars.get(name) {
+                return Some(v.clone());
+            }
+        }
+        None
+    }
+
+    fn assign_var(&mut self, name: &str, val: Value, pos: Pos) -> Result<(), InterpError> {
+        for s in self.scopes.iter_mut().rev() {
+            if s.vars.contains_key(name) {
+                if s.consts.contains(name) {
+                    return Err(err(pos, format!("ধ্রুবক '{}'-এ মান নির্ধারণ করা যাবে না", name)));
+                }
+                s.vars.insert(name.to_string(), val);
+                return Ok(());
+            }
+        }
+        Err(err(pos, format!("অঘোষিত ভ্যারিয়েবল '{}'", name)))
+    }
+
+    fn exec_block(&mut self, b: &Block) -> Result<CF, InterpError> {
+        self.scopes.push(Scope::new());
+        for st in &b.stmts {
+            let cf = self.exec_stmt(st)?;
+            match cf {
+                CF::Normal => {}
+                other => {
+                    self.scopes.pop();
+                    return Ok(other);
+                }
+            }
+        }
+        self.scopes.pop();
+        Ok(CF::Normal)
+    }
+
+    fn exec_stmt(&mut self, s: &Stmt) -> Result<CF, InterpError> {
+        match s {
+            Stmt::Var(v) => {
+                let val = self.eval(&v.init)?;
+                self.define(&v.name.name, val, false, v.name.pos)?;
+                Ok(CF::Normal)
+            }
+            Stmt::Const(c) => {
+                let val = self.eval(&c.init)?;
+                self.define(&c.name.name, val, true, c.name.pos)?;
+                Ok(CF::Normal)
+            }
+            Stmt::If(i) => {
+                let cond = self.eval(&i.cond)?;
+                let b = match cond {
+                    Value::Bool(b) => b,
+                    _ => {
+                        return Err(err(
+                            i.pos,
+                            "'যদি'-এর শর্ত 'সত্যতা' টাইপের হতে হবে",
+                        ))
+                    }
+                };
+                if b {
+                    self.exec_block(&i.then)
+                } else {
+                    match &i.els {
+                        Some(ElseBranch::If(inner)) => self.exec_stmt(&Stmt::If((**inner).clone())),
+                        Some(ElseBranch::Block(blk)) => self.exec_block(blk),
+                        None => Ok(CF::Normal),
+                    }
+                }
+            }
+            Stmt::Loop(l) => {
+                let n = match self.eval(&l.count)? {
+                    Value::Num(n) => n,
+                    _ => {
+                        return Err(err(
+                            l.pos,
+                            "'লুপ'-এর সংখ্যা 'সংখ্যা' টাইপের হতে হবে",
+                        ))
+                    }
+                };
+                if n < 0 {
+                    return Err(err(l.pos, "'লুপ'-এর সংখ্যা ঋণাত্মক হতে পারে না"));
+                }
+                for _ in 0..n {
+                    let cf = self.exec_block(&l.body)?;
+                    match cf {
+                        CF::Break => break,
+                        CF::Continue => continue,
+                        CF::Ret(v) => return Ok(CF::Ret(v)),
+                        CF::Normal => {}
+                    }
+                }
+                Ok(CF::Normal)
+            }
+            Stmt::While(w) => {
+                loop {
+                    let cond = self.eval(&w.cond)?;
+                    match cond {
+                        Value::Bool(true) => {}
+                        Value::Bool(false) => break,
+                        _ => {
+                            return Err(err(
+                                w.pos,
+                                "'যতক্ষণ'-এর শর্ত 'সত্যতা' টাইপের হতে হবে",
+                            ))
+                        }
+                    }
+                    let cf = self.exec_block(&w.body)?;
+                    match cf {
+                        CF::Break => break,
+                        CF::Continue => continue,
+                        CF::Ret(v) => return Ok(CF::Ret(v)),
+                        CF::Normal => {}
+                    }
+                }
+                Ok(CF::Normal)
+            }
+            Stmt::ForEach(fe) => {
+                let iter_val = self.eval(&fe.iter)?;
+                let arr = match iter_val {
+                    Value::Arr(a) => a,
+                    _ => return Err(err(fe.pos, "'প্রতি'-তে শুধু অ্যারে চলবে")),
+                };
+                let items: Vec<Value> = arr.borrow().clone();
+                for v in items {
+                    let mut sc = Scope::new();
+                    sc.vars.insert(fe.var.name.clone(), v);
+                    self.scopes.push(sc);
+                    let cf = self.exec_block(&fe.body)?;
+                    self.scopes.pop();
+                    match cf {
+                        CF::Break => break,
+                        CF::Continue => continue,
+                        CF::Ret(rv) => return Ok(CF::Ret(rv)),
+                        CF::Normal => {}
+                    }
+                }
+                Ok(CF::Normal)
+            }
+            Stmt::Return(r) => {
+                let v = match &r.value {
+                    Some(e) => self.eval(e)?,
+                    None => Value::Null,
+                };
+                Ok(CF::Ret(v))
+            }
+            Stmt::Break(_) => Ok(CF::Break),
+            Stmt::Continue(_) => Ok(CF::Continue),
+            Stmt::Expr(e) => {
+                self.eval(e)?;
+                Ok(CF::Normal)
+            }
+            Stmt::Nested(b) => self.exec_block(b),
+            Stmt::Widget(w) => {
+                match w.kw.as_str() {
+                    "ইনপুট" | "ক্যানভাস" | "ছবি" => Ok(CF::Normal),
+                    _ => {
+                        for a in &w.args {
+                            let _ = self.eval(a)?;
+                        }
+                        if let Some(b) = &w.body {
+                            self.exec_block(b)?;
+                        }
+                        Ok(CF::Normal)
+                    }
+                }
+            }
+            Stmt::TryCatch(tc) => {
+                let saved = self.scopes.len();
+                match self.exec_block(&tc.body) {
+                    Ok(cf) => {
+                        self.scopes.truncate(saved);
+                        Ok(cf)
+                    }
+                    Err(e) => {
+                        self.scopes.truncate(saved);
+                        let mut sc = Scope::new();
+                        sc.vars.insert(
+                            tc.err_var.name.clone(),
+                            Value::Txt(e.message.clone()),
+                        );
+                        self.scopes.push(sc);
+                        let result = self.exec_block(&tc.handler);
+                        self.scopes.pop();
+                        result
+                    }
+                }
+            }
+            Stmt::Display(_) => Ok(CF::Normal),
+        }
+    }
+
+    fn eval(&mut self, e: &Expr) -> Result<Value, InterpError> {
+        match &e.kind {
+            ExprKind::Lit(l) => Ok(match l {
+                Lit::Int(v) => Value::Num(*v),
+                Lit::Float(v) => Value::Dec(*v),
+                Lit::Str(s) => Value::Txt(s.clone()),
+                Lit::Char(c) => Value::Ch(*c),
+                Lit::Bool(b) => Value::Bool(*b),
+                Lit::Null => Value::Null,
+                Lit::Array(items) => {
+                    let mut vals = Vec::with_capacity(items.len());
+                    for it in items {
+                        vals.push(self.eval(it)?);
+                    }
+                    Value::Arr(Rc::new(RefCell::new(vals)))
+                }
+            }),
+            ExprKind::Ident(id) => self
+                .lookup(&id.name)
+                .ok_or_else(|| err(id.pos, format!("অঘোষিত ভ্যারিয়েবল '{}'", id.name))),
+            ExprKind::Qualified { module, name } => {
+                // Check if module is actually a local struct variable → field access
+                if let Some(v) = self.lookup(&module.name) {
+                    match v {
+                        Value::Map(m) => {
+                            let b = m.borrow();
+                            match b.get(&name.name) {
+                                Some(val) => return Ok(val.clone()),
+                                None => return Err(err(
+                                    name.pos,
+                                    format!("'{}' ফিল্ড নেই", name.name),
+                                )),
+                            }
+                        }
+                        _ => {}
+                    }
+                }
+                match (module.name.as_str(), name.name.as_str()) {
+                    ("গণিত", "পাই") => Ok(Value::Dec(std::f64::consts::PI)),
+                    ("গণিত", "ই") => Ok(Value::Dec(std::f64::consts::E)),
+                    _ => Err(err(
+                        name.pos,
+                        format!(
+                            "'{}.{}' একটি ফাংশন — কল করে ব্যবহার করুন",
+                            module.name, name.name
+                        ),
+                    )),
+                }
+            }
+            ExprKind::Unary(op, inner) => {
+                let v = self.eval(inner)?;
+                match op {
+                    UnaryOp::Neg => match v {
+                        Value::Num(n) => n
+                            .checked_neg()
+                            .map(Value::Num)
+                            .ok_or_else(|| err(e.pos, "পূর্ণসংখ্যা ওভারফ্লো")),
+                        Value::Dec(d) => Ok(Value::Dec(-d)),
+                        _ => Err(err(e.pos, "ইউনারি '-'-এর অপারেন্ড সংখ্যা হতে হবে")),
+                    },
+                    UnaryOp::Not => match v {
+                        Value::Bool(b) => Ok(Value::Bool(!b)),
+                        _ => Err(err(
+                            e.pos,
+                            "'না'-এর অপারেন্ড 'সত্যতা' টাইপের হতে হবে",
+                        )),
+                    },
+                }
+            }
+            ExprKind::Binary(op, l, r) => {
+                if *op == BinOp::And || *op == BinOp::Or {
+                    let lv = self.eval(l)?;
+                    let lb = match lv {
+                        Value::Bool(b) => b,
+                        _ => {
+                            return Err(err(
+                                e.pos,
+                                "লজিক্যাল অপারেটরের অপারেন্ড 'সত্যতা' টাইপের হতে হবে",
+                            ))
+                        }
+                    };
+                    if *op == BinOp::And && !lb {
+                        return Ok(Value::Bool(false));
+                    }
+                    if *op == BinOp::Or && lb {
+                        return Ok(Value::Bool(true));
+                    }
+                    let rv = self.eval(r)?;
+                    return match rv {
+                        Value::Bool(b) => Ok(Value::Bool(b)),
+                        _ => Err(err(
+                            e.pos,
+                            "লজিক্যাল অপারেটরের অপারেন্ড 'সত্যতা' টাইপের হতে হবে",
+                        )),
+                    };
+                }
+                let lv = self.eval(l)?;
+                let rv = self.eval(r)?;
+                self.binary(*op, lv, rv, e.pos)
+            }
+            ExprKind::Assign(target, rhs) => {
+                let v = self.eval(rhs)?;
+                self.set_lvalue(target, v)?;
+                Ok(Value::Null)
+            }
+            ExprKind::FieldAssign(base, field, rhs) => {
+                let v = self.eval(rhs)?;
+                let name = &base.name;
+                match self.lookup(name) {
+                    Some(Value::Map(m)) => {
+                        m.borrow_mut().insert(field.name.clone(), v);
+                        Ok(Value::Null)
+                    }
+                    Some(_) => Err(err(base.pos, format!("'{}' ডাটা নয়", name))),
+                    None => Err(err(base.pos, format!("অঘোষিত ভ্যারিয়েবল '{}'", name))),
+                }
+            }
+            ExprKind::Postfix(base, sfx) => {
+                let mut name: Option<(String, Pos)> = match &base.kind {
+                    ExprKind::Ident(id) => Some((id.name.clone(), id.pos)),
+                    ExprKind::Qualified { module, name } => {
+                        Some((format!("{}::{}", module.name, name.name), module.pos))
+                    }
+                    _ => None,
+                };
+                let mut val: Option<Value> = None;
+                for s in sfx {
+                    match s {
+                        Suffix::Call(args, cpos) => {
+                            let (nm, npos) = match name.take() {
+                                Some(x) => x,
+                                None => {
+                                    return Err(err(*cpos, "এটি কলযোগ্য ফাংশন নয়"))
+                                }
+                            };
+                            val = Some(self.call(&nm, npos, args)?);
+                        }
+                        Suffix::Index(ix, ipos) => {
+                            let cur = match val.take() {
+                                Some(v) => v,
+                                None => {
+                                    let (nm, _) = name
+                                        .take()
+                                        .ok_or_else(|| err(*ipos, "এটি ইনডেক্সযোগ্য নয়"))?;
+                                    self.lookup(&nm).ok_or_else(|| {
+                                        err(*ipos, format!("অঘোষিত ভ্যারিয়েবল '{}'", nm))
+                                    })?
+                                }
+                            };
+                            let iv = self.eval(ix)?;
+                            val = Some(self.index_one(cur, iv, *ipos)?);
+                        }
+                        Suffix::Field(fname) => {
+                            let cur = match val.take() {
+                                Some(v) => v,
+                                None => {
+                                    let (nm, _) = name
+                                        .take()
+                                        .ok_or_else(|| err(fname.pos, "ফিল্ড অ্যাক্সেস অবৈধ"))?;
+                                    self.lookup(&nm).ok_or_else(|| {
+                                        err(fname.pos, format!("অঘোষিত ভ্যারিয়েবল '{}'", nm))
+                                    })?
+                                }
+                            };
+                            match cur {
+                                Value::Map(m) => {
+                                    let b = m.borrow();
+                                    match b.get(&fname.name) {
+                                        Some(v) => val = Some(v.clone()),
+                                        None => return Err(err(
+                                            fname.pos,
+                                            format!("'{}' ফিল্ড নেই", fname.name),
+                                        )),
+                                    }
+                                }
+                                _ => return Err(err(
+                                    fname.pos,
+                                    format!("'{}' টাইপের উপর ফিল্ড অ্যাক্সেস করা যায় না", cur),
+                                )),
+                            }
+                        }
+                    }
+                }
+                if let Some((nm, npos)) = name {
+                    if val.is_none() {
+                        return self.lookup(&nm).ok_or_else(|| {
+                            err(npos, format!("অঘোষিত ভ্যারিয়েবল '{}'", nm))
+                        });
+                    }
+                }
+                Ok(val.unwrap_or(Value::Null))
+            }
+        }
+    }
+
+    fn binary(&mut self, op: BinOp, l: Value, r: Value, pos: Pos) -> Result<Value, InterpError> {
+        use BinOp::*;
+        match op {
+            Add => {
+                if let (Value::Txt(a), Value::Txt(b)) = (&l, &r) {
+                    return Ok(Value::Txt(format!("{}{}", a, b)));
+                }
+                if let (Value::Arr(a), Value::Arr(b)) = (&l, &r) {
+                    let nv: Vec<Value> = a
+                        .borrow()
+                        .iter()
+                        .cloned()
+                        .chain(b.borrow().iter().cloned())
+                        .collect();
+                    return Ok(Value::Arr(Rc::new(RefCell::new(nv))));
+                }
+                arith(op, l, r, pos)
+            }
+            Sub | Mul | Div | Mod => arith(op, l, r, pos),
+            Eq => Ok(Value::Bool(values_eq(&l, &r))),
+            Neq => Ok(Value::Bool(!values_eq(&l, &r))),
+            Lt | Gt | Le | Ge => {
+                if let (Value::Txt(a), Value::Txt(b)) = (&l, &r) {
+                    return Ok(Value::Bool(match op {
+                        BinOp::Lt => a < b,
+                        BinOp::Gt => a > b,
+                        BinOp::Le => a <= b,
+                        BinOp::Ge => a >= b,
+                        _ => unreachable!(),
+                    }));
+                }
+                let (a, b) = numeric_pair(l, r, pos)?;
+                Ok(Value::Bool(match op {
+                    BinOp::Lt => a < b,
+                    BinOp::Gt => a > b,
+                    BinOp::Le => a <= b,
+                    BinOp::Ge => a >= b,
+                    _ => unreachable!(),
+                }))
+            }
+            And | Or => unreachable!(),
+        }
+    }
+
+    fn index_one(&mut self, base: Value, ix: Value, pos: Pos) -> Result<Value, InterpError> {
+        match base {
+            Value::Arr(a) => {
+                let i = match ix {
+                    Value::Num(n) => n,
+                    _ => return Err(err(pos, "ইনডেক্স 'সংখ্যা' টাইপের হতে হবে")),
+                };
+                let b = a.borrow();
+                let len = b.len() as i64;
+                if i < 0 || i >= len {
+                    return Err(err(
+                        pos,
+                        format!("ইনডেক্স {} সীমার বাইরে (দৈর্ঘ্য {})", bn_num(i as u32), bn_num(len as u32)),
+                    ));
+                }
+                Ok(b[i as usize].clone())
+            }
+            Value::Txt(s) => {
+                let i = match ix {
+                    Value::Num(n) => n,
+                    _ => return Err(err(pos, "ইনডেক্স 'সংখ্যা' টাইপের হতে হবে")),
+                };
+                let chars: Vec<char> = s.chars().collect();
+                if i < 0 || i >= chars.len() as i64 {
+                    return Err(err(
+                        pos,
+                        format!(
+                            "ইনডেক্স {} সীমার বাইরে (দৈর্ঘ্য {})",
+                            bn_num(i as u32),
+                            bn_num(chars.len() as u32)
+                        ),
+                    ));
+                }
+                Ok(Value::Ch(chars[i as usize]))
+            }
+            Value::Map(m) => {
+                let key = match ix {
+                    Value::Txt(k) => k,
+                    Value::Num(n) => format!("{}", n),
+                    _ => return Err(err(pos, "ম্যাপ key হতে হবে 'লেখা' বা 'সংখ্যা'")),
+                };
+                let b = m.borrow();
+                match b.get(&key) {
+                    Some(v) => Ok(v.clone()),
+                    None => Err(err(pos, format!("কী '{}' ম্যাপে নেই", key))),
+                }
+            }
+            _ => Err(err(pos, "শুধু অ্যারে বা লেখা ইনডেক্স করা যায়")),
+        }
+    }
+
+    fn set_lvalue(&mut self, target: &LValue, v: Value) -> Result<(), InterpError> {
+        if let Some(field) = &target.field {
+            // Struct field assignment: p.field = value
+            let name = &target.base.name;
+            let m = match self.lookup(name) {
+                Some(Value::Map(m)) => m,
+                Some(_) => {
+                    return Err(err(
+                        target.base.pos,
+                        format!("'{}' ডাটা নয়", name),
+                    ))
+                }
+                None => {
+                    return Err(err(
+                        target.base.pos,
+                        format!("অঘোষিত ভ্যারিয়েবল '{}'", name),
+                    ))
+                }
+            };
+            m.borrow_mut().insert(field.name.clone(), v);
+            return Ok(());
+        }
+        if target.idx.is_empty() {
+            return self.assign_var(&target.base.name, v, target.base.pos);
+        }
+        // Map index assignment
+        if let Some(Value::Map(m)) = self.lookup(&target.base.name) {
+            let key_expr = target.idx.first().unwrap();
+            let kv = self.eval(key_expr)?;
+            let key = match kv {
+                Value::Txt(k) => k,
+                Value::Num(n) => format!("{}", n),
+                _ => return Err(err(target.base.pos, "ম্যাপ key হতে হবে 'লেখা' বা 'সংখ্যা'")),
+            };
+            m.borrow_mut().insert(key, v);
+            return Ok(());
+        }
+        // Array index assignment
+        let arr_rc = match self.lookup(&target.base.name) {
+            Some(Value::Arr(a)) => a,
+            Some(_) => {
+                return Err(err(
+                    target.base.pos,
+                    format!("'{}' অ্যারে নয়", target.base.name),
+                ));
+            }
+            None => {
+                return Err(err(
+                    target.base.pos,
+                    format!("অঘোষিত ভ্যারিয়েবল '{}'", target.base.name),
+                ));
+            }
+        };
+        let n = target.idx.len();
+        let mut rc = arr_rc;
+        for (k, ie) in target.idx.iter().enumerate() {
+            let iv = self.eval(ie)?;
+            let i = match iv {
+                Value::Num(i) => i,
+                _ => return Err(err(target.base.pos, "ইনডেক্স 'সংখ্যা' টাইপের হতে হবে")),
+            };
+            let mut b = rc.borrow_mut();
+            let len = b.len() as i64;
+            if i < 0 || i >= len {
+                return Err(err(
+                    target.base.pos,
+                    format!(
+                        "ইনডেক্স {} সীমার বাইরে (দৈর্ঘ্য {})",
+                        bn_num(i as u32),
+                        bn_num(len as u32)
+                    ),
+                ));
+            }
+            if k + 1 == n {
+                b[i as usize] = v;
+                return Ok(());
+            }
+            let nxt = match &b[i as usize] {
+                Value::Arr(a) => Rc::clone(a),
+                _ => {
+                    return Err(err(target.base.pos, "নেস্টেড ইনডেক্সে অ্যারে প্রত্যাশিত"));
+                }
+            };
+            drop(b);
+            rc = nxt;
+        }
+        Ok(())
+    }
+
+    fn rng_next(&mut self) -> u64 {
+        self.rng = self
+            .rng
+            .wrapping_mul(6364136223846793005)
+            .wrapping_add(1442695040888963407);
+        self.rng >> 33
+    }
+
+    fn next_net_handle(&mut self) -> i64 {
+        let h = self.net_next;
+        self.net_next += 1;
+        h as i64
+    }
+
+    fn call_stdlib(
+        &mut self,
+        module: &str,
+        item: &str,
+        pos: Pos,
+        args: &[Expr],
+    ) -> Result<Value, InterpError> {
+        if module == "গ্রাফিক্স" && item == "টিক" {
+            let mt = self.eval(&args[0])?;
+            let _ = mt;
+            if let Some(ExprKind::Ident(h)) = args.get(1).map(|a| &a.kind) {
+                let key = h.name.clone();
+                let hpos = h.pos;
+                if self.funcs.contains_key(&key) {
+                    return self.call(&key, hpos, &[]);
+                }
+                return Err(err(hpos, format!("অজানা হ্যান্ডলার ফাংশন '{}'", key)));
+            }
+            return Err(err(pos, "'টিক'-এর দ্বিতীয় আর্গুমেন্ট হ্যান্ডলার ফাংশনের নাম"));
+        }
+        let mut vals: Vec<Value> = Vec::with_capacity(args.len());
+        for a in args {
+            vals.push(self.eval(a)?);
+        }
+        match (module, item, vals.as_slice()) {
+            // গণিত
+            ("গণিত", "পরম", [Value::Num(x)]) => Ok(Value::Num(x.abs())),
+            ("গণিত", "পরমদ", [Value::Dec(x)]) => Ok(Value::Dec(x.abs())),
+            ("গণিত", "পরমদ", [Value::Num(x)]) => Ok(Value::Dec(*x as f64)),
+            ("গণিত", "বর্গমূল", [Value::Dec(x)]) => {
+                if *x < 0.0 {
+                    Err(err(pos, "বর্গমূলে ঋণাত্মক সংখ্যা নেয় না"))
+                } else {
+                    Ok(Value::Dec(x.sqrt()))
+                }
+            }
+            ("গণিত", "বর্গমূল", [Value::Num(x)]) => {
+                if *x < 0 {
+                    Err(err(pos, "বর্গমূলে ঋণাত্মক সংখ্যা নেয় না"))
+                } else {
+                    Ok(Value::Dec((*x as f64).sqrt()))
+                }
+            }
+            ("গণিত", "শক্তি", [a, b]) => Ok(Value::Dec(num_f(a)?.powf(num_f(b)?))),
+            ("গণিত", "বেস", [v]) => Ok(Value::Num(num_f(v)?.floor() as i64)),
+            ("গণিত", "আপার", [v]) => Ok(Value::Num(num_f(v)?.ceil() as i64)),
+            ("গণিত", "রাউন্ডঅফ", [v]) => Ok(Value::Num(num_f(v)?.round() as i64)),
+            ("গণিত", "সাইন", [v]) => Ok(Value::Dec(num_f(v)?.sin())),
+            ("গণিত", "কোসাইন", [v]) => Ok(Value::Dec(num_f(v)?.cos())),
+            ("গণিত", "ট্যান", [v]) => Ok(Value::Dec(num_f(v)?.tan())),
+            ("গণিত", "লগ", [v]) => Ok(Value::Dec(num_f(v)?.ln())),
+            ("গণিত", "লগ১০", [v]) => Ok(Value::Dec(num_f(v)?.log10())),
+            ("গণিত", "ছোটসংখ্যা", [Value::Num(a), Value::Num(b)]) => {
+                Ok(Value::Num(*a.min(b)))
+            }
+            ("গণিত", "বড়সংখ্যা", [Value::Num(a), Value::Num(b)]) => {
+                Ok(Value::Num(*a.max(b)))
+            }
+            ("গণিত", "ছোটদশমিক", [a, b]) => {
+                let (x, y) = (num_f(a)?, num_f(b)?);
+                Ok(Value::Dec(x.min(y)))
+            }
+            ("গণিত", "বড়দশমিক", [a, b]) => {
+                let (x, y) = (num_f(a)?, num_f(b)?);
+                Ok(Value::Dec(x.max(y)))
+            }
+
+            // লেখা
+            ("লেখা", "বড়হাতের", [Value::Txt(s)]) => Ok(Value::Txt(
+                s.chars().map(|c| c.to_ascii_uppercase()).collect(),
+            )),
+            ("লেখা", "ছোটহাতের", [Value::Txt(s)]) => Ok(Value::Txt(
+                s.chars().map(|c| c.to_ascii_lowercase()).collect(),
+            )),
+            ("লেখা", "ছাঁটো", [Value::Txt(s)]) => Ok(Value::Txt(s.trim().to_string())),
+            ("লেখা", "সেপারেট", [Value::Txt(s), Value::Txt(sep)]) => {
+                if sep.is_empty() {
+                    return Err(err(pos, "খালি বিভাজক দেওয়া যাবে না"));
+                }
+                let parts: Vec<Value> = s
+                    .split(sep.as_str())
+                    .map(|p| Value::Txt(p.to_string()))
+                    .collect();
+                Ok(Value::Arr(Rc::new(RefCell::new(parts))))
+            }
+            ("লেখা", "জুড়াও", [Value::Arr(arr), Value::Txt(sep)]) => {
+                let mut out = String::new();
+                for (i, v) in arr.borrow().iter().enumerate() {
+                    if i > 0 {
+                        out.push_str(sep);
+                    }
+                    match v {
+                        Value::Txt(t) => out.push_str(t),
+                        other => {
+                            return Err(err(
+                                pos,
+                                format!("'জুড়াও'-তে 'লেখা' অ্যারে লাগে, '{}' পেয়েছে", other),
+                            ))
+                        }
+                    }
+                }
+                Ok(Value::Txt(out))
+            }
+            ("লেখা", "বদলাও", [Value::Txt(s), Value::Txt(from), Value::Txt(to)]) => {
+                if from.is_empty() {
+                    return Err(err(pos, "খালি অনুসন্ধান-লেখা দেওয়া যাবে না"));
+                }
+                Ok(Value::Txt(s.replace(from.as_str(), to)))
+            }
+            ("লেখা", "খুঁজো", [Value::Txt(s), Value::Txt(sub)]) => {
+                Ok(Value::Num(match s.find(sub.as_str()) {
+                    Some(bi) => s[..bi].chars().count() as i64,
+                    None => -1,
+                }))
+            }
+            ("লেখা", "স্লাইস", [Value::Txt(s), Value::Num(st), Value::Num(ln)]) => {
+                let chars: Vec<char> = s.chars().collect();
+                let start = (*st).clamp(0, chars.len() as i64) as usize;
+                let end = (start + (*ln).max(0) as usize).min(chars.len());
+                Ok(Value::Txt(chars[start..end].iter().collect()))
+            }
+            ("লেখা", "শুরুতে_আছে", [Value::Txt(s), Value::Txt(p)]) => {
+                Ok(Value::Bool(s.starts_with(p.as_str())))
+            }
+            ("লেখা", "শেষে_আছে", [Value::Txt(s), Value::Txt(p)]) => {
+                Ok(Value::Bool(s.ends_with(p.as_str())))
+            }
+
+            // ফাইল  (পড়ো_লাইন is a global builtin, not a member — it reads
+            // from standard input rather than from a file)
+            ("ফাইল", "পড়ো", [Value::Txt(path)]) => match std::fs::read_to_string(path) {
+                Ok(content) => Ok(Value::Txt(content)),
+                Err(e) => Err(err(pos, format!("ফাইল পড়া যায়নি '{}': {}", path, e))),
+            },
+            ("ফাইল", "লেখো", [Value::Txt(path), Value::Txt(content)]) => {
+                match std::fs::write(path, content.as_bytes()) {
+                    Ok(()) => Ok(Value::Null),
+                    Err(e) => Err(err(pos, format!("ফাইল লেখা যায়নি '{}': {}", path, e))),
+                }
+            }
+            ("ফাইল", "যোগ", [Value::Txt(path), Value::Txt(content)]) => {
+                use std::io::Write as _;
+                match std::fs::OpenOptions::new()
+                    .create(true)
+                    .append(true)
+                    .open(path)
+                    .and_then(|mut f| f.write_all(content.as_bytes()))
+                {
+                    Ok(()) => Ok(Value::Null),
+                    Err(e) => Err(err(pos, format!("ফাইলে যোগ করা যায়নি '{}': {}", path, e))),
+                }
+            }
+
+            // সময়
+            ("সময়", "এখন_মিলিসেকেন্ড", []) => {
+                let ms = std::time::SystemTime::now()
+                    .duration_since(std::time::UNIX_EPOCH)
+                    .map(|d| d.as_millis() as i64)
+                    .unwrap_or(0);
+                Ok(Value::Num(ms))
+            }
+            ("সময়", "ঘড়ি", []) => Ok(Value::Dec(
+                std::time::SystemTime::now()
+                    .duration_since(std::time::UNIX_EPOCH)
+                    .map(|d| d.as_secs_f64())
+                    .unwrap_or(0.0),
+            )),
+
+            // র‍্যান্ডম
+            ("র‍্যান্ডম", "বীজ", [Value::Num(s)]) => {
+                self.rng = *s as u64 ^ 0x2545F4914F6CDD1D;
+                Ok(Value::Null)
+            }
+            ("র‍্যান্ডম", "সংখ্যা", []) => Ok(Value::Num(self.rng_next() as i64)),
+            ("র‍্যান্ডম", "মধ্যে", [Value::Num(lo), Value::Num(hi)]) => {
+                if lo > hi {
+                    return Err(err(pos, "'মধ্যে'-তে নিম্নসীমা উচ্চসীমার বেশি"));
+                }
+                let span = (hi - lo + 1) as u64;
+                Ok(Value::Num(lo + (self.rng_next() % span) as i64))
+            }
+            ("র‍্যান্ডম", "দশমিক", []) => {
+                Ok(Value::Dec((self.rng_next() % 1_000_000) as f64 / 1_000_000.0))
+            }
+
+            // ফাইলসিস্টেম
+            ("ফাইলসিস্টেম", "ফাইল_আছে", [Value::Txt(p)]) => {
+                Ok(Value::Bool(std::path::Path::new(p).is_file()))
+            }
+            ("ফাইলসিস্টেম", "ডিরেক্টরি_আছে", [Value::Txt(p)]) => {
+                Ok(Value::Bool(std::path::Path::new(p).is_dir()))
+            }
+            ("ফাইলসিস্টেম", "ডিরেক্টরি_বানাও", [Value::Txt(p)]) => {
+                match std::fs::create_dir_all(p) {
+                    Ok(()) => Ok(Value::Null),
+                    Err(e) => Err(err(pos, format!("ডিরেক্টরি তৈরি ব্যর্থ '{}': {}", p, e))),
+                }
+            }
+            ("ফাইলসিস্টেম", "মুছো", [Value::Txt(p)]) => match std::fs::remove_file(p) {
+                Ok(()) => Ok(Value::Null),
+                Err(e) => Err(err(pos, format!("মুছতে ব্যর্থ '{}': {}", p, e))),
+            },
+            ("ফাইলসিস্টেম", "তালিকা", [Value::Txt(p)]) => {
+                let mut names: Vec<Value> = Vec::new();
+                match std::fs::read_dir(p) {
+                    Ok(rd) => {
+                        for e in rd.flatten() {
+                            names.push(Value::Txt(e.file_name().to_string_lossy().into_owned()));
+                        }
+                        Ok(Value::Arr(Rc::new(RefCell::new(names))))
+                    }
+                    Err(e) => Err(err(pos, format!("তালিকা পড়া যায়নি '{}': {}", p, e))),
+                }
+            }
+            ("ফাইলসিস্টেম", "কপি", [Value::Txt(a), Value::Txt(b)]) => {
+                match std::fs::copy(a, b) {
+                    Ok(_) => Ok(Value::Null),
+                    Err(e) => Err(err(pos, format!("কপি ব্যর্থ '{}'-('{}'): {}", a, b, e))),
+                }
+            }
+            ("ফাইলসিস্টেম", "সরাও", [Value::Txt(a), Value::Txt(b)]) => {
+                match std::fs::rename(a, b) {
+                    Ok(()) => Ok(Value::Null),
+                    Err(e) => Err(err(pos, format!("সরানো ব্যর্থ '{}'-('{}'): {}", a, b, e))),
+                }
+            }
+
+            // জেসন
+            ("জেসন", "বৈধকি", [Value::Txt(t)]) => Ok(Value::Bool(json_valid(t))),
+            ("জেসন", "বের_হও", [Value::Txt(s)]) => Ok(Value::Txt(json_escape(s))),
+            ("জেসন", "লেখা_বের_করো", [Value::Txt(t), Value::Txt(key)]) => {
+                Ok(Value::Txt(json_string_field(t, key).unwrap_or_default()))
+            }
+            ("জেসন", "সংখ্যা_বের_করো", [Value::Txt(t), Value::Txt(key)]) => {
+                Ok(Value::Num(
+                    json_num_field(t, key).ok_or_else(|| err(pos, format!("'{}' কী-তে কোনো পূর্ণসংখ্যা নেই", key)))?,
+                ))
+            }
+
+            // নেটওয়ার্ক
+            ("নেটওয়ার্ক", "যোগ", [Value::Txt(host), Value::Num(port)]) => {
+                use std::net::TcpStream;
+                match TcpStream::connect((host.as_str(), *port as u16)) {
+                    Ok(stream) => {
+                        let handle = self.next_net_handle();
+                        self.net.insert(handle as u32, stream);
+                        Ok(Value::Num(handle))
+                    }
+                    Err(e) => Err(err(pos, format!("সংযোগ ব্যর্থ '{}:{}': {}", host, port, e))),
+                }
+            }
+            ("নেটওয়ার্ক", "পাঠাও", [Value::Num(h), Value::Txt(data)]) => {
+                use std::io::Write as _;
+                match self.net.get_mut(&((*h) as u32)) {
+                    Some(s) => s.write_all(data.as_bytes()).map_err(|e| {
+                        err(pos, format!("পাঠাতে ব্যর্থ: {}", e))
+                    })?,
+                    None => return Err(err(pos, format!("অবৈধ সংযোগ #{}", h))),
+                }
+                Ok(Value::Null)
+            }
+            ("নেটওয়ার্ক", "নাও", [Value::Num(h), Value::Num(max)]) => {
+                use std::io::Read as _;
+                let handle = (*h) as u32;
+                match self.net.get_mut(&handle) {
+                    Some(s) => {
+                        let mut buf = vec![0u8; (*max).clamp(1, 1 << 20) as usize];
+                        let n = s.read(&mut buf).map_err(|e| err(pos, format!("পড়তে ব্যর্থ: {}", e)))?;
+                        Ok(Value::Txt(String::from_utf8_lossy(&buf[..n]).into_owned()))
+                    }
+                    None => Err(err(pos, format!("অবৈধ সংযোগ #{}", h))),
+                }
+            }
+            ("নেটওয়ার্ক", "বন্ধ", [Value::Num(h)]) => {
+                self.net.remove(&((*h) as u32));
+                Ok(Value::Null)
+            }
+
+            // গ্রাফিক্স — ইন্টারপ্রেটেড মোডে আঁকা no-op
+            ("গ্রাফিক্স", _, _) => Ok(Value::Null),
+
+            _ => Err(err(
+                pos,
+                format!("'{}.{}': ভুল আর্গুমেন্ট টাইপ বা অজানা ফাংশন", module, item),
+            )),
+        }
+    }
+
+    fn call(&mut self, name: &str, pos: Pos, args: &[Expr]) -> Result<Value, InterpError> {
+        if let Some((module, item)) = name.split_once("::") {
+            return self.call_stdlib(module, item, pos, args);
+        }
+        if name == "লেখো" {
+            for a in args {
+                let v = self.eval(a)?;
+                writeln!(self.out, "{}", v).map_err(|_| {
+                    err(pos, "আউটপুট লেখা যায়নি")
+                })?;
+            }
+            return Ok(Value::Null);
+        }
+        if name == "দৈর্ঘ্য" {
+            if args.len() != 1 {
+                return Err(err(
+                    pos,
+                    format!(
+                        "'দৈর্ঘ্য' ১টি আর্গুমেন্ট নেয়, {}টি পেয়েছে",
+                        bn_num(args.len() as u32)
+                    ),
+                ));
+            }
+            let v = self.eval(&args[0])?;
+            return match v {
+                Value::Txt(s) => Ok(Value::Num(s.chars().count() as i64)),
+                Value::Arr(a) => Ok(Value::Num(a.borrow().len() as i64)),
+                Value::Map(m) => Ok(Value::Num(m.borrow().len() as i64)),
+                _ => Err(err(pos, "'দৈর্ঘ্য' 'লেখা', অ্যারে বা ম্যাপ নেয়")),
+            };
+        }
+        if name == "পড়ো_লাইন" {
+            if !args.is_empty() {
+                return Err(err(pos, "'পড়ো_লাইন' কোনো আর্গুমেন্ট নেয় না"));
+            }
+            let mut line = String::new();
+            return match std::io::stdin().read_line(&mut line) {
+                Ok(_) => Ok(Value::Txt(line.trim_end_matches(['\n', '\r']).to_string())),
+                Err(_) => Err(err(pos, "ইনপুট পড়া যায়নি")),
+            };
+        }
+        if name == "কপি" {
+            if args.len() != 1 {
+                return Err(err(
+                    pos,
+                    format!(
+                        "'কপি' ১টি আর্গুমেন্ট নেয়, {}টি পেয়েছে",
+                        bn_num(args.len() as u32)
+                    ),
+                ));
+            }
+            let v = self.eval(&args[0])?;
+            return Ok(deep_copy(&v));
+        }
+        if name == "শেয়ার_করো" {
+            if args.len() != 1 {
+                return Err(err(
+                    pos,
+                    format!(
+                        "'শেয়ার_করো' ১টি আর্গুমেন্ট নেয়, {}টি পেয়েছে",
+                        bn_num(args.len() as u32)
+                    ),
+                ));
+            }
+            let v = self.eval(&args[0])?;
+            return Ok(Value::Shared(Rc::new(RefCell::new(v))));
+        }
+        if name == "মান" {
+            if args.len() != 1 {
+                return Err(err(
+                    pos,
+                    format!("'মান' ১টি আর্গুমেন্ট নেয়, {}টি পেয়েছে", bn_num(args.len() as u32)),
+                ));
+            }
+            let v = self.eval(&args[0])?;
+            return match v {
+                Value::Shared(s) => Ok(s.borrow().clone()),
+                _ => Err(err(pos, "'মান' 'শেয়ার' মান নেয়")),
+            };
+        }
+        if name == "বসাও" {
+            if args.len() != 2 {
+                return Err(err(
+                    pos,
+                    format!(
+                        "'বসাও' ২টি আর্গুমেন্ট নেয়, {}টি পেয়েছে",
+                        bn_num(args.len() as u32)
+                    ),
+                ));
+            }
+            let cell = self.eval(&args[0])?;
+            let v = self.eval(&args[1])?;
+            return match cell {
+                Value::Shared(s) => {
+                    *s.borrow_mut() = v;
+                    Ok(Value::Null)
+                }
+                _ => Err(err(pos, "'বসাও'-এর প্রথম আর্গুমেন্ট 'শেয়ার' হতে হবে")),
+            };
+        }
+        if name == "লেখায়" {
+            if args.len() != 1 {
+                return Err(err(
+                    pos,
+                    format!(
+                        "'লেখায়' ১টি আর্গুমেন্ট নেয়, {}টি পেয়েছে",
+                        bn_num(args.len() as u32)
+                    ),
+                ));
+            }
+            let v = self.eval(&args[0])?;
+            return match v {
+                Value::Shared(_) => Err(err(pos, "'লেখায়'-এর আগে 'মান(x)' দিন")),
+                other => Ok(Value::Txt(format!("{}", other))),
+            };
+        }
+        if name == "ম্যাপ_তৈরি" {
+            return Ok(Value::Map(Rc::new(RefCell::new(HashMap::new()))));
+        }
+        if self.structs.contains_key(name) {
+            let field_names = self.structs[name].clone();
+            let mut m = HashMap::new();
+            for (i, fname) in field_names.iter().enumerate() {
+                if i < args.len() {
+                    let v = self.eval(&args[i])?;
+                    m.insert(fname.clone(), v);
+                }
+            }
+            return Ok(Value::Map(Rc::new(RefCell::new(m))));
+        }
+        if name == "চাবি_গুলো" {
+            if args.len() != 1 {
+                return Err(err(pos, format!("'চাবি_গুলো' ১টি আর্গুমেন্ট নেয়")));
+            }
+            let v = self.eval(&args[0])?;
+            return match v {
+                Value::Map(m) => {
+                    let keys: Vec<Value> =
+                        m.borrow().keys().map(|k| Value::Txt(k.clone())).collect();
+                    Ok(Value::Arr(Rc::new(RefCell::new(keys))))
+                }
+                _ => Err(err(pos, "'চাবি_গুলো' ম্যাপ নেয়")),
+            };
+        }
+        if name == "আছে_কি" {
+            if args.len() != 2 {
+                return Err(err(pos, format!("'আছে_কি' ২টি আর্গুমেন্ট নেয়")));
+            }
+            let m = self.eval(&args[0])?;
+            let k = self.eval(&args[1])?;
+            return match (m, k) {
+                (Value::Map(m), Value::Txt(k)) => {
+                    Ok(Value::Bool(m.borrow().contains_key(&k)))
+                }
+                (Value::Map(m), Value::Num(n)) => {
+                    Ok(Value::Bool(m.borrow().contains_key(&n.to_string())))
+                }
+                _ => Err(err(pos, "'আছে_কি' ম্যাপ ও key নেয়")),
+            };
+        }
+        if name == "চাবি_মুছো" {
+            if args.len() != 2 {
+                return Err(err(pos, format!("'মুছো_কী' ২টি আর্গুমেন্ট নেয়")));
+            }
+            let m = self.eval(&args[0])?;
+            let k = self.eval(&args[1])?;
+            return match (m, k) {
+                (Value::Map(m), Value::Txt(k)) => {
+                    m.borrow_mut().remove(&k);
+                    Ok(Value::Null)
+                }
+                (Value::Map(m), Value::Num(n)) => {
+                    m.borrow_mut().remove(&n.to_string());
+                    Ok(Value::Null)
+                }
+                _ => Err(err(pos, "'মুছো_কী' ম্যাপ ও key নেয়")),
+            };
+        }
+        let f = match self.funcs.get(name) {
+            Some(f) => Rc::clone(f),
+            None => return Err(err(pos, format!("অজানা ফাংশন '{}'", name))),
+        };
+        if f.params.len() != args.len() {
+            return Err(err(
+                pos,
+                format!(
+                    "'{}' {}টি প্যারামিটার নেয়, {}টি পেয়েছে",
+                    name,
+                    bn_num(f.params.len() as u32),
+                    bn_num(args.len() as u32)
+                ),
+            ));
+        }
+        let mut bound = Scope::new();
+        for (p, a) in f.params.iter().zip(args.iter()) {
+            let v = self.eval(a)?;
+            bound.vars.insert(p.name.name.clone(), v);
+        }
+        self.scopes.push(bound);
+        let cf = self.exec_block(&f.body)?;
+        self.scopes.pop();
+        Ok(match cf {
+            CF::Ret(v) => v,
+            _ => Value::Null,
+        })
+    }
+}
+
+struct JsonP<'a> {
+    c: Vec<char>,
+    i: usize,
+    _src: &'a str,
+}
+
+impl<'a> JsonP<'a> {
+    fn new(s: &'a str) -> Self {
+        JsonP {
+            c: s.chars().collect(),
+            i: 0,
+            _src: s,
+        }
+    }
+    fn ws(&mut self) {
+        while self.i < self.c.len() && self.c[self.i].is_whitespace() {
+            self.i += 1;
+        }
+    }
+    fn peek(&self) -> Option<char> {
+        self.c.get(self.i).copied()
+    }
+    fn value(&mut self) -> bool {
+        self.ws();
+        match self.peek() {
+            Some('{') => self.object(),
+            Some('[') => self.array(),
+            Some('"') => self.string().is_some(),
+            Some('t') => self.lit("true"),
+            Some('f') => self.lit("false"),
+            Some('n') => self.lit("null"),
+            Some(_) => self.number(),
+            None => false,
+        }
+    }
+    fn lit(&mut self, word: &str) -> bool {
+        let w: Vec<char> = word.chars().collect();
+        if self.i + w.len() <= self.c.len() && self.c[self.i..self.i + w.len()] == w[..] {
+            self.i += w.len();
+            true
+        } else {
+            false
+        }
+    }
+    fn object(&mut self) -> bool {
+        self.i += 1;
+        self.ws();
+        if self.peek() == Some('}') {
+            self.i += 1;
+            return true;
+        }
+        loop {
+            self.ws();
+            if self.string().is_none() {
+                return false;
+            }
+            self.ws();
+            if self.peek() != Some(':') {
+                return false;
+            }
+            self.i += 1;
+            if !self.value() {
+                return false;
+            }
+            self.ws();
+            match self.peek() {
+                Some(',') => self.i += 1,
+                Some('}') => {
+                    self.i += 1;
+                    return true;
+                }
+                _ => return false,
+            }
+        }
+    }
+    fn array(&mut self) -> bool {
+        self.i += 1;
+        self.ws();
+        if self.peek() == Some(']') {
+            self.i += 1;
+            return true;
+        }
+        loop {
+            if !self.value() {
+                return false;
+            }
+            self.ws();
+            match self.peek() {
+                Some(',') => self.i += 1,
+                Some(']') => {
+                    self.i += 1;
+                    return true;
+                }
+                _ => return false,
+            }
+        }
+    }
+    fn string(&mut self) -> Option<String> {
+        if self.peek() != Some('"') {
+            return None;
+        }
+        self.i += 1;
+        let mut out = String::new();
+        while let Some(ch) = self.peek() {
+            self.i += 1;
+            match ch {
+                '"' => return Some(out),
+                '\\' => {
+                    let e = self.peek()?;
+                    self.i += 1;
+                    match e {
+                        'n' => out.push('\n'),
+                        't' => out.push('\t'),
+                        'r' => out.push('\r'),
+                        'b' => out.push('\u{8}'),
+                        'f' => out.push('\u{c}'),
+                        'u' => {
+                            let mut v = 0u32;
+                            for _ in 0..4 {
+                                let h = self.peek()?;
+                                v = v * 16 + h.to_digit(16)?;
+                                self.i += 1;
+                            }
+                            out.push(char::from_u32(v)?);
+                        }
+                        other => out.push(other),
+                    }
+                }
+                other => out.push(other),
+            }
+        }
+        None
+    }
+    fn number(&mut self) -> bool {
+        let start = self.i;
+        if self.peek() == Some('-') {
+            self.i += 1;
+        }
+        while let Some(c) = self.peek() {
+            if c.is_ascii_digit() || c == '.' || c == 'e' || c == 'E' || c == '+' || c == '-' {
+                self.i += 1;
+            } else {
+                break;
+            }
+        }
+        self.i > start
+    }
+}
+
+fn json_valid(text: &str) -> bool {
+    let mut p = JsonP::new(text);
+    p.ws();
+    if !p.value() {
+        return false;
+    }
+    p.ws();
+    p.i == p.c.len()
+}
+
+fn json_escape(s: &str) -> String {
+    let mut out = String::from("\"");
+    for ch in s.chars() {
+        match ch {
+            '"' => out.push_str("\\\""),
+            '\\' => out.push_str("\\\\"),
+            '\n' => out.push_str("\\n"),
+            '\r' => out.push_str("\\r"),
+            '\t' => out.push_str("\\t"),
+            c if (c as u32) < 0x20 => out.push_str(&format!("\\u{:04x}", c as u32)),
+            c => out.push(c),
+        }
+    }
+    out.push('"');
+    out
+}
+
+fn json_find_key(text: &str, key: &str) -> Option<usize> {
+    let needle = format!("\"{}\"", key);
+    let key_bytes = text.find(&needle)?;
+    let after_key = key_bytes + needle.len();
+    let rest = &text[after_key..];
+    let colon_rel = rest.find(':')?;
+    Some(after_key + colon_rel + 1)
+}
+
+fn json_string_field(text: &str, key: &str) -> Option<String> {
+    let start = json_find_key(text, key)?;
+    let mut p = JsonP::new(&text[start..]);
+    p.ws();
+    p.string()
+}
+
+fn json_num_field(text: &str, key: &str) -> Option<i64> {
+    let start = json_find_key(text, key)?;
+    let mut p = JsonP::new(&text[start..]);
+    p.ws();
+    let begin = p.i;
+    if !p.number() {
+        return None;
+    }
+    let raw: String = p.c[begin..p.i].iter().collect();
+    raw.parse::<i64>().ok()
+}
+
+fn num_f(v: &Value) -> Result<f64, InterpError> {    match v {
+        Value::Num(n) => Ok(*n as f64),
+        Value::Dec(d) => Ok(*d),
+        other => Err(InterpError {
+            line: 0,
+            col: 0,
+            message: format!("সংখ্যা প্রত্যাশিত, '{}' পাওয়া গেছে", other),
+        }),
+    }
+}
+
+fn values_eq(l: &Value, r: &Value) -> bool {
+    match (l, r) {
+        (Value::Num(a), Value::Num(b)) => a == b,
+        (Value::Dec(a), Value::Dec(b)) => a == b,
+        (Value::Num(a), Value::Dec(b)) | (Value::Dec(b), Value::Num(a)) => (*a as f64) == *b,
+        (Value::Txt(a), Value::Txt(b)) => a == b,
+        (Value::Bool(a), Value::Bool(b)) => a == b,
+        (Value::Ch(a), Value::Ch(b)) => a == b,
+        (Value::Null, Value::Null) => true,
+        (Value::Arr(a), Value::Arr(b)) => Rc::ptr_eq(a, b),
+        (Value::Shared(a), Value::Shared(b)) => Rc::ptr_eq(a, b),
+        _ => false,
+    }
+}
+
+fn deep_copy(v: &Value) -> Value {
+    match v {
+        Value::Arr(a) => {
+            let nv: Vec<Value> = a.borrow().iter().map(deep_copy).collect();
+            Value::Arr(Rc::new(RefCell::new(nv)))
+        }
+        other => other.clone(),
+    }
+}
+
+fn arith(op: BinOp, l: Value, r: Value, pos: Pos) -> Result<Value, InterpError> {
+    if let (Value::Num(a), Value::Num(b)) = (&l, &r) {
+        return match op {
+            BinOp::Add => a
+                .checked_add(*b)
+                .map(Value::Num)
+                .ok_or_else(|| err(pos, "পূর্ণসংখ্যা ওভারফ্লো")),
+            BinOp::Sub => a
+                .checked_sub(*b)
+                .map(Value::Num)
+                .ok_or_else(|| err(pos, "পূর্ণসংখ্যা ওভারফ্লো")),
+            BinOp::Mul => a
+                .checked_mul(*b)
+                .map(Value::Num)
+                .ok_or_else(|| err(pos, "পূর্ণসংখ্যা ওভারফ্লো")),
+            BinOp::Div => {
+                if *b == 0 {
+                    Err(err(pos, "শূন্য দিয়ে ভাগ করা যাবে না"))
+                } else {
+                    a.checked_div(*b)
+                        .map(Value::Num)
+                        .ok_or_else(|| err(pos, "পূর্ণসংখ্যা ওভারফ্লো"))
+                }
+            }
+            BinOp::Mod => {
+                if *b == 0 {
+                    Err(err(pos, "শূন্য দিয়ে ভাগ (মডুলো) করা যাবে না"))
+                } else {
+                    a.checked_rem(*b)
+                        .map(Value::Num)
+                        .ok_or_else(|| err(pos, "পূর্ণসংখ্যা ওভারফ্লো"))
+                }
+            }
+            _ => unreachable!(),
+        };
+    }
+    let (a, b) = numeric_pair(l, r, pos)?;
+    match op {
+        BinOp::Add => Ok(Value::Dec(a + b)),
+        BinOp::Sub => Ok(Value::Dec(a - b)),
+        BinOp::Mul => Ok(Value::Dec(a * b)),
+        BinOp::Div => {
+            if b == 0.0 {
+                Err(err(pos, "শূন্য দিয়ে ভাগ করা যাবে না"))
+            } else {
+                Ok(Value::Dec(a / b))
+            }
+        }
+        BinOp::Mod => {
+            if b == 0.0 {
+                Err(err(pos, "শূন্য দিয়ে ভাগ (মডুলো) করা যাবে না"))
+            } else {
+                Ok(Value::Dec(a % b))
+            }
+        }
+        _ => unreachable!(),
+    }
+}
+
+fn numeric_pair(l: Value, r: Value, pos: Pos) -> Result<(f64, f64), InterpError> {
+    match (l, r) {
+        (Value::Num(a), Value::Num(b)) => Ok((a as f64, b as f64)),
+        (Value::Num(a), Value::Dec(b)) => Ok((a as f64, b)),
+        (Value::Dec(a), Value::Num(b)) => Ok((a, b as f64)),
+        (Value::Dec(a), Value::Dec(b)) => Ok((a, b)),
+        _ => Err(err(pos, "এই অপারেটরের অপারেন্ড সংখ্যা হতে হবে")),
+    }
+}

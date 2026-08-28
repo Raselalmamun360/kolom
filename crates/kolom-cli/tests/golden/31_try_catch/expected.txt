@@ -1,0 +1,4 @@
+ধরা হয়েছে:
+ফাইল পড়া যায়নি 'নেই_এমন_ফাইল.txt': The system cannot find the file specified. (os error 2)
+ভাগ ত্রুটি ধরা হয়েছে
+শেষ

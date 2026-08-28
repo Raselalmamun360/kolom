@@ -1,0 +1,302 @@
+//! Target selection and linking for Cranelift-emitted object code — the
+//! step that replaces "shell out to whatever gcc/clang/cc is on PATH".
+//!
+//! Nothing here compiles anything. `rust-lld` is a *linker*: it combines
+//! already-generated machine code (our object file + the prebuilt
+//! kolom-runtime static library + system import libraries) into a PE
+//! executable. That is the same job the old backend delegated to `cc`,
+//! minus the "compile C source" half, which Cranelift now does in-process.
+//!
+//! # Why the GNU ABI
+//!
+//! Kolom targets `x86_64-pc-windows-gnu` (MinGW-w64), not the MSVC ABI,
+//! for one decisive reason: **redistribution**. Linking against the MSVC
+//! ABI requires Microsoft's Windows SDK import libraries (`kernel32.Lib`,
+//! `libcmt.lib`, …), and Microsoft's own `Redist.txt` — the authoritative
+//! list of code licensed for redistribution — does not list `.lib` files
+//! at all. Those libraries are meant for building on a machine that has
+//! the SDK installed; shipping them inside a kolom distribution is not
+//! something that list permits.
+//!
+//! MinGW-w64's equivalents are freely redistributable, and as a bonus are
+//! roughly ten times smaller (~5 MB against ~51 MB), so a self-contained
+//! kolom install is both legally shippable and materially lighter.
+//!
+//! # The kolom sysroot
+//!
+//! Like rustc — which ships its standard library and linker in a sysroot
+//! next to the compiler rather than embedding them — kolom looks for its
+//! support files in a sysroot directory:
+//!
+//! ```text
+//! <dir of kolom.exe>/
+//!   kolom.exe
+//!   sysroot/
+//!     libkolom_runtime.a    the Kolom runtime (required)
+//!     bin/rust-lld.exe      the bundled linker (optional; see below)
+//!     lib/*.a, *.o          MinGW-w64 CRT objects and import libraries
+//! ```
+//!
+//! Each piece has a development-time fallback so a `cargo build` checkout
+//! works with no install step:
+//! - **runtime**: falls back to `target/<profile>/` for the GNU target.
+//! - **linker**: falls back to `rust-lld` inside the active rustc sysroot,
+//!   which every Rust toolchain ships.
+//! - **CRT/import libs**: falls back to an installed MinGW-w64.
+//!
+//! Populating `sysroot/bin` and `sysroot/lib` at package time is what makes
+//! an installed kolom fully self-contained. `KOLOM_SYSROOT` overrides the
+//! sysroot location.
+
+use std::path::{Path, PathBuf};
+use std::process::Command;
+
+/// The target Kolom compiles for. See the module docs on why GNU, not MSVC.
+pub const TARGET_TRIPLE: &str = "x86_64-pc-windows-gnu";
+
+/// What a link attempt needed but could not find, with a Bengali message
+/// aimed at the person running `কলম বিল্ড`.
+#[derive(Debug)]
+pub struct LinkError(pub String);
+
+impl std::fmt::Display for LinkError {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(f, "{}", self.0)
+    }
+}
+
+impl std::error::Error for LinkError {}
+
+fn err<T>(msg: impl Into<String>) -> Result<T, LinkError> {
+    Err(LinkError(msg.into()))
+}
+
+/// Cranelift ISA builder for the Kolom target. Explicitly requests the GNU
+/// triple rather than the host's, so object files carry the ABI the linker
+/// below expects, regardless of which toolchain built `kolom` itself.
+pub fn isa_builder() -> Result<cranelift_codegen::isa::Builder, String> {
+    let triple: target_lexicon::Triple = TARGET_TRIPLE.parse().map_err(|e| format!("অবৈধ টার্গেট ট্রিপল: {:?}", e))?;
+    cranelift_codegen::isa::lookup(triple).map_err(|e| format!("Cranelift টার্গেট সমর্থন করে না: {}", e))
+}
+
+/// Expands one path pattern segment-by-segment; `"*"` matches any entry.
+/// Used to find versioned SDK/toolchain directories without a glob crate
+/// (kolom's workspace deliberately keeps its dependency set small).
+fn glob(base: &Path, segments: &[&str]) -> Vec<PathBuf> {
+    let mut current = vec![base.to_path_buf()];
+    for seg in segments {
+        let mut next = Vec::new();
+        for dir in &current {
+            let Ok(entries) = std::fs::read_dir(dir) else { continue };
+            for entry in entries.flatten() {
+                let name = entry.file_name();
+                let name = name.to_string_lossy();
+                if *seg == "*" || name.eq_ignore_ascii_case(seg) {
+                    next.push(entry.path());
+                }
+            }
+        }
+        current = next;
+    }
+    current
+}
+
+/// The kolom sysroot: `$KOLOM_SYSROOT`, else `<dir of kolom.exe>/sysroot`.
+pub fn sysroot() -> Option<PathBuf> {
+    if let Ok(p) = std::env::var("KOLOM_SYSROOT") {
+        if !p.trim().is_empty() {
+            return Some(PathBuf::from(p));
+        }
+    }
+    let exe = std::env::current_exe().ok()?;
+    Some(exe.parent()?.join("sysroot"))
+}
+
+const RUNTIME_LIB_NAME: &str = "libkolom_runtime.a";
+
+/// Locates the Kolom runtime: sysroot first, then the cargo target
+/// directory for the GNU target (dev checkout).
+pub fn find_runtime_lib() -> Option<PathBuf> {
+    if let Some(sr) = sysroot() {
+        let p = sr.join(RUNTIME_LIB_NAME);
+        if p.exists() {
+            return Some(p);
+        }
+    }
+    let exe = std::env::current_exe().ok()?;
+    // Walk up out of target/<profile>[/deps] and look under the GNU target
+    // directory, where `cargo build --target x86_64-pc-windows-gnu` puts it.
+    let mut dir = exe.parent()?.to_path_buf();
+    for _ in 0..4 {
+        for profile in ["release", "debug"] {
+            let p = dir.join("target").join(TARGET_TRIPLE).join(profile).join(RUNTIME_LIB_NAME);
+            if p.exists() {
+                return Some(p);
+            }
+            let p2 = dir.join(TARGET_TRIPLE).join(profile).join(RUNTIME_LIB_NAME);
+            if p2.exists() {
+                return Some(p2);
+            }
+        }
+        dir = dir.parent()?.to_path_buf();
+    }
+    None
+}
+
+const RUST_LLD_NAME: &str = "rust-lld.exe";
+
+/// Locates `rust-lld` — a single self-contained executable, so bundling it
+/// into a kolom sysroot is one file copy. (The `gcc-ld/ld.lld` alongside it
+/// in a Rust toolchain is only a thin wrapper that re-invokes `rust-lld`
+/// through a relative path, so it does NOT survive being copied alone.)
+pub fn find_linker() -> Option<PathBuf> {
+    if let Some(sr) = sysroot() {
+        let p = sr.join("bin").join(RUST_LLD_NAME);
+        if p.exists() {
+            return Some(p);
+        }
+    }
+    let out = Command::new("rustc").arg("--print").arg("sysroot").output().ok()?;
+    let rust_sysroot = String::from_utf8(out.stdout).ok()?.trim().to_string();
+    if rust_sysroot.is_empty() {
+        return None;
+    }
+    glob(Path::new(&rust_sysroot), &["lib", "rustlib", "*", "bin", RUST_LLD_NAME]).pop()
+}
+
+/// Directories holding MinGW-w64's CRT startup objects and import
+/// libraries. Prefers a bundled `sysroot/lib`; otherwise falls back to an
+/// installed MinGW-w64 (so a dev checkout works without packaging first).
+pub fn find_lib_dirs() -> Vec<PathBuf> {
+    if let Some(sr) = sysroot() {
+        let p = sr.join("lib");
+        if p.is_dir() {
+            return vec![p];
+        }
+    }
+    let mut dirs = Vec::new();
+    let mut roots: Vec<PathBuf> = Vec::new();
+    if let Ok(p) = std::env::var("MINGW64_ROOT") {
+        if !p.trim().is_empty() {
+            roots.push(PathBuf::from(p));
+        }
+    }
+    // A MinGW on PATH: <...>/mingw64/bin/gcc.exe -> <...>/mingw64
+    if let Some(paths) = std::env::var_os("PATH") {
+        for d in std::env::split_paths(&paths) {
+            if d.join("gcc.exe").exists() {
+                if let Some(parent) = d.parent() {
+                    roots.push(parent.to_path_buf());
+                }
+            }
+        }
+    }
+    for r in [r"C:\msys64\mingw64", r"C:\mingw64"] {
+        roots.push(PathBuf::from(r));
+    }
+    for root in roots {
+        let libdir = root.join("x86_64-w64-mingw32").join("lib");
+        if libdir.is_dir() {
+            dirs.push(libdir);
+            // libgcc lives under a version-stamped gcc directory.
+            if let Some(g) = glob(&root.join("lib").join("gcc").join("x86_64-w64-mingw32"), &["*"]).pop() {
+                dirs.push(g);
+            }
+            break;
+        }
+    }
+    dirs
+}
+
+/// System libraries every Kolom program links against, in GNU link order.
+/// The UI/graphics engine needs gdi32/user32; the rest back Rust's `std`
+/// on Windows. `-lmingw32`/`-lmingwex`/`-lgcc` and the UCRT provide the C
+/// runtime the mingw CRT startup code expects.
+const SYSTEM_LIBS: &[&str] = &[
+    "-lmingw32",
+    "-lgcc",
+    "-lgcc_eh",
+    "-lmoldname",
+    "-lmingwex",
+    "-lucrt",
+    "-lkernel32",
+    "-luser32",
+    "-lgdi32",
+    "-ladvapi32",
+    "-lshell32",
+    "-luserenv",
+    "-lws2_32",
+    "-lbcrypt",
+    "-lntdll",
+    "-lsynchronization",
+    "-lole32",
+    "-loleaut32",
+];
+
+/// Links `obj_path` into `exe_path`. Returns the linker's own diagnostics
+/// on failure so build errors stay actionable.
+pub fn link_executable(obj_path: &Path, exe_path: &Path) -> Result<(), LinkError> {
+    let linker = match find_linker() {
+        Some(l) => l,
+        None => {
+            return err(
+                "লিংকার পাওয়া যায়নি — kolom sysroot-এ 'bin/rust-lld.exe' রাখো, \
+                 অথবা Rust টুলচেইন ইনস্টল করো (KOLOM_SYSROOT দিয়ে পথ বদলানো যায়)",
+            )
+        }
+    };
+    let runtime = match find_runtime_lib() {
+        Some(r) => r,
+        None => {
+            return err(format!(
+                "কলম রানটাইম ('{}') পাওয়া যায়নি — kolom sysroot-এ রাখো (KOLOM_SYSROOT দিয়ে পথ বদলানো যায়)",
+                RUNTIME_LIB_NAME
+            ))
+        }
+    };
+    let lib_dirs = find_lib_dirs();
+    if lib_dirs.is_empty() {
+        return err(
+            "MinGW-w64 লাইব্রেরি পাওয়া যায়নি — kolom sysroot-এ 'lib/' ফোল্ডারে রাখো, \
+             অথবা MinGW-w64 ইনস্টল করো (MINGW64_ROOT দিয়ে পথ দেওয়া যায়)",
+        );
+    }
+    // mingw's CRT startup object; without it there is no entry point.
+    let crt2 = lib_dirs.iter().map(|d| d.join("crt2.o")).find(|p| p.exists());
+    let crt2 = match crt2 {
+        Some(p) => p,
+        None => return err("MinGW-এর 'crt2.o' পাওয়া যায়নি — sysroot/lib অসম্পূর্ণ"),
+    };
+    let crtbegin = lib_dirs.iter().map(|d| d.join("crtbegin.o")).find(|p| p.exists());
+    let crtend = lib_dirs.iter().map(|d| d.join("crtend.o")).find(|p| p.exists());
+
+    let mut cmd = Command::new(&linker);
+    cmd.arg("-flavor").arg("gnu");
+    cmd.arg("-o").arg(exe_path);
+    cmd.arg("-m").arg("i386pep"); // 64-bit PE
+    cmd.arg("--subsystem").arg("console");
+    for d in &lib_dirs {
+        cmd.arg(format!("-L{}", d.display()));
+    }
+    cmd.arg(&crt2);
+    if let Some(p) = &crtbegin {
+        cmd.arg(p);
+    }
+    cmd.arg(obj_path).arg(&runtime);
+    for l in SYSTEM_LIBS {
+        cmd.arg(l);
+    }
+    if let Some(p) = &crtend {
+        cmd.arg(p);
+    }
+
+    match cmd.output() {
+        Ok(out) if out.status.success() => Ok(()),
+        Ok(out) => err(format!(
+            "লিংক ব্যর্থ (কোড {}):\n{}",
+            out.status.code().unwrap_or(-1),
+            String::from_utf8_lossy(&out.stderr).trim()
+        )),
+        Err(e) => err(format!("লিংকার '{}' চালানো যায়নি: {}", linker.display(), e)),
+    }
+}

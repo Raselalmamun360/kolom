@@ -1,0 +1,17 @@
+[package]
+name = "kolom-cli"
+version = "0.1.0"
+edition = "2021"
+license = "MIT OR Apache-2.0"
+
+[[bin]]
+name = "kolom"
+path = "src/main.rs"
+
+[dependencies]
+kolom-lexer = { path = "../kolom-lexer" }
+kolom-syntax = { path = "../kolom-syntax" }
+kolom-sema = { path = "../kolom-sema" }
+kolom-codegen = { path = "../kolom-codegen" }
+kolom-interp = { path = "../kolom-interp" }
+kolom-codegen-cranelift = { version = "0.1.0", path = "../kolom-codegen-cranelift" }

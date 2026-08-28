@@ -1,0 +1,28 @@
+# --- Rust build output ---------------------------------------------------
+# `target/` alone reaches several GB; never commit it.
+/target/
+**/*.rs.bk
+
+# --- Kolom distribution ---------------------------------------------------
+# Produced by `scripts/make-sysroot.sh`. ~150 MB, and every byte of it is
+# rebuildable from source, so it is a release artifact rather than a source
+# file. Attach it to a release instead of committing it.
+/dist/
+
+# --- Kolom build/run artifacts -------------------------------------------
+# `কলম বিল্ড` writes to the system temp directory, but a program run from
+# the repo root can still drop files here (the filesystem/io examples do).
+/উপতথ্য/
+kolom_io_test.txt
+*.exe
+*.obj
+*.pdb
+
+# --- Editor / OS ----------------------------------------------------------
+.vscode/
+.idea/
+*.swp
+*~
+Thumbs.db
+desktop.ini
+.DS_Store
