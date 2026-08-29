@@ -201,6 +201,18 @@ fn find_c_compiler() -> Option<String> {
     None
 }
 
+/// The target name that means "this machine". `কলম বিল্ড` defaults to
+/// `windows`, so this is also what tells a default build from a cross build.
+fn host_target() -> &'static str {
+    if cfg!(target_os = "windows") {
+        "windows"
+    } else if cfg!(target_os = "macos") {
+        "macos"
+    } else {
+        "linux"
+    }
+}
+
 fn cmd_build(path: Option<&String>, target: Option<&String>, use_c_backend: bool) -> ExitCode {
     let target = target.map(|s| s.as_str()).unwrap_or("windows");
     let (prog, file, _name) = match check_program(path) {
@@ -271,6 +283,26 @@ fn cmd_build(path: Option<&String>, target: Option<&String>, use_c_backend: bool
     let c_path = build_dir.join("out.c");
     if std::fs::write(&c_path, c_source.as_bytes()).is_err() {
         eprintln!("ত্রুটি: C সোর্স লেখা যায়নি");
+        return ExitCode::FAILURE;
+    }
+
+    // The C backend passes the target no further than choosing console vs
+    // Win32 output — it never selects a toolchain. So a cross target here
+    // would be compiled by whatever host `gcc`/`clang` is on PATH, and
+    // `কলম বিল্ড main.ক android` would hand back a working *host* binary with
+    // nothing to suggest it was not an Android one. Require the cross
+    // compiler to be named explicitly instead.
+    if target != host_target() && std::env::var("KLOM_CC").map(|v| v.trim().is_empty()).unwrap_or(true) {
+        eprintln!(
+            "ত্রুটি: '{}' টার্গেটের জন্য C ব্যাকএন্ডে ক্রস-কম্পাইলার লাগে — KLOM_CC দিয়ে সেটি দেখাও",
+            target
+        );
+        eprintln!("  যেমন (Android NDK):");
+        eprintln!("    KLOM_CC=<NDK>/toolchains/llvm/prebuilt/<host>/bin/aarch64-linux-android21-clang");
+        if target == "linux" {
+            eprintln!("  অথবা ডিফল্ট ব্যাকএন্ড ব্যবহার করো, যেটির কোনো C কম্পাইলার লাগে না:");
+            eprintln!("    কলম বিল্ড {} linux", file);
+        }
         return ExitCode::FAILURE;
     }
 
@@ -357,14 +389,19 @@ fn cmd_target() -> ExitCode {
     println!("কলম টার্গেট");
     println!();
     println!("  windows   Windows x64 — Win32/GDI UI (ডিফল্ট)");
+    println!("             কোনো বাইরের টুল লাগে না।");
     println!("  linux     Linux x64 — স্ট্যাটিক musl বাইনারি, কনসোল মোড");
-    println!("  android   Android NDK — শুধু `--সি` ব্যাকএন্ডে");
+    println!("             কোনো বাইরের টুল লাগে না।");
+    println!("  android   Android — এখনো স্বয়ংসম্পূর্ণ নয়।");
+    println!("             `--সি` ব্যাকএন্ড ও NDK ক্রস-কম্পাইলার দরকার,");
+    println!("             KLOM_CC দিয়ে সেটির পথ দিতে হবে।");
     println!();
     println!("ব্যবহার: kolom বিল্ড <ফাইল> <টার্গেট>");
     println!("উদাহরণ:");
     println!("  kolom বিল্ড main.ক windows");
     println!("  kolom বিল্ড main.ক linux");
-    println!("  kolom বিল্ড main.ক android");
+    println!("  KLOM_CC=<NDK>/.../aarch64-linux-android21-clang \\");
+    println!("    kolom বিল্ড --সি main.ক android");
     ExitCode::SUCCESS
 }
 

@@ -501,18 +501,18 @@ impl P {
             };
             self.end_stmt();
             Stmt::Return(ReturnStmt { pos, value })
-        } else if self.at_kw("থামো") {
+        } else if self.at_kw("বিরতি") {
             let pos = self.pos();
             if self.loop_depth == 0 {
-                self.diag_here("'থামো' শুধু লুপের ভেতরে বৈধ".to_string());
+                self.diag_here("'বিরতি' শুধু লুপের ভেতরে বৈধ".to_string());
             }
             self.bump();
             self.end_stmt();
             Stmt::Break(pos)
-        } else if self.at_kw("চলো") {
+        } else if self.at_kw("চলবে") {
             let pos = self.pos();
             if self.loop_depth == 0 {
-                self.diag_here("'চালিয়ে_যাও' শুধু লুপের ভেতরে বৈধ".to_string());
+                self.diag_here("'চলবে' শুধু লুপের ভেতরে বৈধ".to_string());
             }
             self.bump();
             self.end_stmt();

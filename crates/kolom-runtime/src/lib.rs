@@ -31,9 +31,134 @@ fn bn_digits(v: i64) -> String {
     digits.iter().rev().collect()
 }
 
-fn oob(idx: i64, len: i64) -> ! {
-    eprintln!("ত্রুটি: ইনডেক্স {} সীমার বাইরে (দৈর্ঘ্য {})", bn_digits(idx), bn_digits(len));
-    std::process::exit(1);
+// ============================================================================
+// ত্রুটি ব্যবস্থাপনা (error handling) — `চেষ্টা` / `ধরো`
+// ============================================================================
+//
+// Kolom has no `throw`. Every failure originates inside this runtime — a
+// failed file read, a division by zero, an index out of range — so the set of
+// throw sites is closed and known here. That is what lets errors work without
+// stack unwinding, which matters: unwinding through Cranelift-generated frames
+// is not something Cranelift supports, and the C backend's `setjmp`/`longjmp`
+// scheme jumps over every refcount cleanup between the failure and the handler.
+//
+// Instead `fail()` checks whether a `চেষ্টা` block is currently active:
+//
+//   * none active    -> print to stderr and exit(1), exactly as before
+//   * inside a block -> record the message and return, letting the caller
+//                       return a benign value
+//
+// Generated code polls `kl_err_pending` after each statement inside a
+// `চেষ্টা` body and branches to the handler when one is pending. The benign
+// value is therefore never observed by the program: the poll always runs
+// before anything can read it.
+//
+// State is thread-local because a `চেষ্টা` block guards the thread running
+// it; a failure on another thread is that thread's own business.
+
+use std::cell::RefCell;
+
+struct ErrState {
+    /// How many `চেষ্টা` blocks this thread has entered and not yet left.
+    depth: i64,
+    /// Message awaiting collection by a handler, if any.
+    pending: Option<String>,
+}
+
+thread_local! {
+    static ERR: RefCell<ErrState> = RefCell::new(ErrState { depth: 0, pending: None });
+}
+
+/// Reports a runtime failure. Returns to its caller only when a `চেষ্টা`
+/// block is active — otherwise the process exits, which is what every one of
+/// these call sites did before `চেষ্টা` was supported.
+fn fail(msg: String) {
+    let caught = ERR.with(|e| {
+        let mut e = e.borrow_mut();
+        if e.depth > 0 {
+            // An already-pending error means generated code has not reached
+            // its poll yet. Keep the first: that is the failure the handler is
+            // about to be told about, and anything after it is fallout.
+            if e.pending.is_none() {
+                e.pending = Some(msg.clone());
+            }
+            true
+        } else {
+            false
+        }
+    });
+    if !caught {
+        eprintln!("ত্রুটি: {}", msg);
+        std::process::exit(1);
+    }
+}
+
+/// Entering a `চেষ্টা` block.
+#[no_mangle]
+pub extern "C" fn kl_try_enter() {
+    ERR.with(|e| e.borrow_mut().depth += 1);
+}
+
+/// Leaving a `চেষ্টা` block by either path — the body running to
+/// completion, or control transferring to the handler.
+#[no_mangle]
+pub extern "C" fn kl_try_exit() {
+    ERR.with(|e| {
+        let mut e = e.borrow_mut();
+        if e.depth > 0 {
+            e.depth -= 1;
+        }
+    });
+}
+
+/// 1 when a failure is waiting to be handled. Polled by generated code after
+/// each statement inside a `চেষ্টা` body.
+#[no_mangle]
+pub extern "C" fn kl_err_pending() -> i64 {
+    ERR.with(|e| i64::from(e.borrow().pending.is_some()))
+}
+
+/// Clears the pending failure and returns its message as a fresh `kl_str`,
+/// which the handler owns and binds as its `ধরো(e)` variable.
+#[no_mangle]
+pub extern "C" fn kl_err_take() -> *mut u8 {
+    let msg = ERR.with(|e| e.borrow_mut().pending.take()).unwrap_or_default();
+    str_from_rust(&msg)
+}
+
+/// `a / b` or `a % b` where `b` is zero. Generated code calls this *instead of*
+/// dividing, because Cranelift's `sdiv` traps in hardware and a hardware trap
+/// cannot be caught.
+#[no_mangle]
+pub extern "C" fn kl_fail_div_zero() {
+    fail("শূন্য দিয়ে ভাগ করা যাবে না".to_string());
+}
+
+/// Eight zeroed bytes handed back by fallible accessors once they have failed,
+/// so generated code that loads the slot it was about to use reads a zero or
+/// null instead of dereferencing garbage. `kl_rc_incref` and the `*_decref`
+/// family all treat null as a no-op, so the value stays inert until the poll
+/// that follows discards it.
+static ERR_SCRATCH: [u8; 8] = [0; 8];
+
+fn scratch_slot() -> *mut u8 {
+    ERR_SCRATCH.as_ptr() as *mut u8
+}
+
+/// The inert slot, for generated code that has just been told a lookup failed
+/// but still has to produce *some* address to load from before it reaches its
+/// poll. See `ERR_SCRATCH`.
+#[no_mangle]
+pub extern "C" fn kl_err_scratch() -> *mut u8 {
+    scratch_slot()
+}
+
+fn oob(idx: i64, len: i64) {
+    fail(format!(
+        "ইনডেক্স {} সীমার বাইরে (দৈর্ঘ্য {})",
+        bn_digits(idx),
+        bn_digits(len)
+    ));
 }
 
 /// Prints `v` followed by a newline. ASCII digits, matching the
@@ -245,6 +370,7 @@ pub extern "C" fn kl_arr_get_ptr(p: *mut u8, idx: i64) -> *mut u8 {
     let len = kl_arr_len(p);
     if idx < 0 || idx >= len {
         oob(idx, len);
+        return scratch_slot();
     }
     unsafe { arr_data(p).add((idx * arr_elem_size(p)) as usize) }
 }
@@ -482,8 +608,7 @@ pub extern "C" fn kl_io_write_file(path: *mut u8, content: *mut u8) {
     let p = String::from_utf8_lossy(unsafe { str_slice(path) }).into_owned();
     let c = unsafe { str_slice(content) };
     if let Err(e) = std::fs::write(&p, c) {
-        eprintln!("ত্রুটি: ফাইল লেখা যায়নি '{}': {}", p, e);
-        std::process::exit(1);
+        fail(format!("ফাইল লেখা যায়নি '{}': {}", p, e));
     }
 }
 
@@ -494,8 +619,7 @@ pub extern "C" fn kl_io_append_file(path: *mut u8, content: *mut u8) {
     let c = unsafe { str_slice(content) };
     let res = std::fs::OpenOptions::new().create(true).append(true).open(&p).and_then(|mut f| f.write_all(c));
     if let Err(e) = res {
-        eprintln!("ত্রুটি: ফাইলে যোগ করা যায়নি '{}': {}", p, e);
-        std::process::exit(1);
+        fail(format!("ফাইলে যোগ করা যায়নি '{}': {}", p, e));
     }
 }
 
@@ -505,8 +629,8 @@ pub extern "C" fn kl_io_read_file(path: *mut u8) -> *mut u8 {
     match std::fs::read(&p) {
         Ok(bytes) => kl_str_new(bytes.as_ptr(), bytes.len() as i64),
         Err(e) => {
-            eprintln!("ত্রুটি: ফাইল পড়া যায়নি '{}': {}", p, e);
-            std::process::exit(1);
+            fail(format!("ফাইল পড়া যায়নি '{}': {}", p, e));
+            str_from_rust("")
         }
     }
 }
@@ -545,8 +669,7 @@ pub extern "C" fn kl_fs_dir_exists(path: *mut u8) -> i8 {
 pub extern "C" fn kl_fs_mkdir(path: *mut u8) {
     let p = String::from_utf8_lossy(unsafe { str_slice(path) }).into_owned();
     if let Err(e) = std::fs::create_dir_all(&p) {
-        eprintln!("ত্রুটি: ডিরেক্টরি তৈরি করা যায়নি '{}': {}", p, e);
-        std::process::exit(1);
+        fail(format!("ডিরেক্টরি তৈরি করা যায়নি '{}': {}", p, e));
     }
 }
 
@@ -556,8 +679,7 @@ pub extern "C" fn kl_fs_remove(path: *mut u8) {
     let path_ref = std::path::Path::new(&p);
     let res = if path_ref.is_dir() { std::fs::remove_dir_all(path_ref) } else { std::fs::remove_file(path_ref) };
     if let Err(e) = res {
-        eprintln!("ত্রুটি: মোছা যায়নি '{}': {}", p, e);
-        std::process::exit(1);
+        fail(format!("মোছা যায়নি '{}': {}", p, e));
     }
 }
 
@@ -566,8 +688,7 @@ pub extern "C" fn kl_fs_copy(src: *mut u8, dst: *mut u8) {
     let s = String::from_utf8_lossy(unsafe { str_slice(src) }).into_owned();
     let d = String::from_utf8_lossy(unsafe { str_slice(dst) }).into_owned();
     if let Err(e) = std::fs::copy(&s, &d) {
-        eprintln!("ত্রুটি: কপি করা যায়নি '{}' -> '{}': {}", s, d, e);
-        std::process::exit(1);
+        fail(format!("কপি করা যায়নি '{}' -> '{}': {}", s, d, e));
     }
 }
 
@@ -576,8 +697,7 @@ pub extern "C" fn kl_fs_rename(src: *mut u8, dst: *mut u8) {
     let s = String::from_utf8_lossy(unsafe { str_slice(src) }).into_owned();
     let d = String::from_utf8_lossy(unsafe { str_slice(dst) }).into_owned();
     if let Err(e) = std::fs::rename(&s, &d) {
-        eprintln!("ত্রুটি: সরানো যায়নি '{}' -> '{}': {}", s, d, e);
-        std::process::exit(1);
+        fail(format!("সরানো যায়নি '{}' -> '{}': {}", s, d, e));
     }
 }
 
@@ -1053,9 +1173,8 @@ pub extern "C" fn kl_map_incref(p: *mut u8) {
 }
 
 #[no_mangle]
-pub extern "C" fn kl_map_missing_key() -> ! {
-    eprintln!("ত্রুটি: ম্যাপে key পাওয়া যায়নি");
-    std::process::exit(1);
+pub extern "C" fn kl_map_missing_key() {
+    fail("ম্যাপে key পাওয়া যায়নি".to_string());
 }
 
 #[no_mangle]
@@ -1098,9 +1217,8 @@ fn net_table() -> &'static Mutex<NetTable> {
     T.get_or_init(|| Mutex::new(NetTable { streams: StdHashMap::new(), next: 1 }))
 }
 
-fn net_fail(what: &str, detail: &str) -> ! {
-    eprintln!("ত্রুটি: {} — {}", what, detail);
-    std::process::exit(1);
+fn net_fail(what: &str, detail: &str) {
+    fail(format!("{} — {}", what, detail));
 }
 
 /// `নেটওয়ার্ক.কানেক্ট(host, port)` — opens a TCP connection, returns its handle.
@@ -1115,7 +1233,10 @@ pub extern "C" fn kl_net_connect(host: *mut u8, port: i64) -> i64 {
             t.streams.insert(handle, stream);
             handle
         }
-        Err(e) => net_fail(&format!("সংযোগ ব্যর্থ '{}:{}'", h, port), &e.to_string()),
+        Err(e) => {
+            net_fail(&format!("সংযোগ ব্যর্থ '{}:{}'", h, port), &e.to_string());
+            0
+        }
     }
 }
 
@@ -1144,9 +1265,15 @@ pub extern "C" fn kl_net_recv(handle: i64, max: i64) -> *mut u8 {
     match t.streams.get_mut(&handle) {
         Some(s) => match s.read(&mut buf) {
             Ok(n) => kl_str_new(buf.as_ptr(), n as i64),
-            Err(e) => net_fail("পড়তে ব্যর্থ", &e.to_string()),
+            Err(e) => {
+                net_fail("পড়তে ব্যর্থ", &e.to_string());
+                str_from_rust("")
+            }
         },
-        None => net_fail("অবৈধ সংযোগ", &format!("#{}", handle)),
+        None => {
+            net_fail("অবৈধ সংযোগ", &format!("#{}", handle));
+            str_from_rust("")
+        }
     }
 }
 

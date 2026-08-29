@@ -1487,28 +1487,30 @@ impl Gen {
             return format!("{}({})", fname, parts.join(", "));
         }
         match (module, item) {
-            ("গণিত", "পরম") => {
-                self.ensure_math_runtime();
-                *ret_out = Ty::Num;
-                format!("kl_math_abs({})", g(0))
-            }
-            ("গণিত", "পরমদ") => {
-                *ret_out = Ty::Dec;
-                format!("fabs({})", g(0))
+            // Overloaded on the argument's type; sema has already checked it.
+            ("গণিত", "পরম_মান") => {
+                if matches!(self.ety(&args[0]), Ty::Dec) {
+                    *ret_out = Ty::Dec;
+                    format!("fabs({})", g(0))
+                } else {
+                    self.ensure_math_runtime();
+                    *ret_out = Ty::Num;
+                    format!("kl_math_abs({})", g(0))
+                }
             }
             ("গণিত", "বর্গমূল") => {
                 *ret_out = Ty::Dec;
                 format!("sqrt({})", g(0))
             }
-            ("গণিত", "শক্তি") => {
+            ("গণিত", "ঘাত") => {
                 *ret_out = Ty::Dec;
                 format!("pow({}, {})", g(0), g(1))
             }
-            ("গণিত", "বেস") => {
+            ("গণিত", "নিম্নমান") => {
                 *ret_out = Ty::Num;
                 format!("(int64_t)floor({})", g(0))
             }
-            ("গণিত", "আপার") => {
+            ("গণিত", "উর্ধ্বমান") => {
                 *ret_out = Ty::Num;
                 format!("(int64_t)ceil({})", g(0))
             }
@@ -1530,27 +1532,18 @@ impl Gen {
             }
             ("গণিত", "লগ") => {
                 *ret_out = Ty::Dec;
-                format!("log({})", g(0))
-            }
-            ("গণিত", "লগ১০") => {
-                *ret_out = Ty::Dec;
                 format!("log10({})", g(0))
             }
-            ("গণিত", "ছোটসংখ্যা") => {
-                *ret_out = Ty::Num;
-                format!("(({}) < ({}) ? ({}) : ({}))", g(0), g(1), g(0), g(1))
-            }
-            ("গণিত", "বড়সংখ্যা") => {
-                *ret_out = Ty::Num;
-                format!("(({}) > ({}) ? ({}) : ({}))", g(0), g(1), g(0), g(1))
-            }
-            ("গণিত", "ছোটদশমিক") => {
+            ("গণিত", "লন") => {
                 *ret_out = Ty::Dec;
-                format!("fmin({}, {})", g(0), g(1))
+                format!("log({})", g(0))
             }
-            ("গণিত", "বড়দশমিক") => {
-                *ret_out = Ty::Dec;
-                format!("fmax({}, {})", g(0), g(1))
+            // The ternary works for both types, so only the result type
+            // needs deciding. Sema has checked that the arguments agree.
+            ("গণিত", "সর্বনিম্ন") | ("গণিত", "সর্বোচ্চ") => {
+                *ret_out = if matches!(self.ety(&args[0]), Ty::Dec) { Ty::Dec } else { Ty::Num };
+                let op = if item == "সর্বনিম্ন" { "<" } else { ">" };
+                format!("(({}) {} ({}) ? ({}) : ({}))", g(0), op, g(1), g(0), g(1))
             }
 
             ("লেখা", _) => {

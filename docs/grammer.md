@@ -724,8 +724,13 @@ USER
 যতক্ষণ
 প্রতি
 
-থামো
-চালিয়ে_যাও
+ডাটা
+
+বিরতি
+চলবে
+
+চেষ্টা
+ধরো
 
 ইম্পোর্ট
 
@@ -738,6 +743,7 @@ USER
 না
 
 শেয়ার
+ম্যাপ
 ```
 
 ## ৫.২ সংরক্ষিত কীওয়ার্ড — নেটিভ UI
@@ -762,6 +768,8 @@ USER
 ডায়ালগ
 
 স্ক্রল
+
+ক্যানভাস
 ```
 
 ## ৫.৩ সংরক্ষিত টাইপ নাম
@@ -1007,10 +1015,11 @@ Program =
 
 TopLevelDeclaration =
       FunctionDeclaration
-    | ConstantDeclaration ;
+    | ConstantDeclaration
+    | StructDeclaration ;
 ```
 
-একটি সোর্স ফাইলে যেকোনো সংখ্যক ইম্পোর্ট ডিক্লারেশন থাকতে পারে, তারপর যেকোনো সংখ্যক টপ-লেভেল ফাংশন বা কনস্ট্যান্ট ডিক্লারেশন থাকতে পারে।
+একটি সোর্স ফাইলে যেকোনো সংখ্যক ইম্পোর্ট ডিক্লারেশন থাকতে পারে, তারপর যেকোনো সংখ্যক টপ-লেভেল ফাংশন, কনস্ট্যান্ট বা `ডাটা` ডিক্লারেশন থাকতে পারে, যেকোনো ক্রমে।
 
 `AppDeclaration` ঐচ্ছিক, কারণ কলম-এ দুই ধরনের সোর্স ফাইল থাকে —
 
@@ -1104,6 +1113,55 @@ ImportDeclaration =
 
 মডিউল রেজোলিউশন নোটের জন্য দেখুন §১৪।
 
+## ১০.৫ স্ট্রাক্ট ডিক্লারেশন (`ডাটা`)
+
+```ebnf
+StructDeclaration =
+    "ডাটা"
+    Identifier
+    "{"
+    [ FieldList ]
+    "}" ;
+
+FieldList =
+    Field { "," Field } [ "," ] ;
+
+Field =
+    Identifier ":" Type ;
+```
+
+`ডাটা` একটি নির্দিষ্ট (fixed) সেট ফিল্ড সহ একটি নতুন টাইপ ঘোষণা করে —
+
+```kolom
+ডাটা ব্যক্তি {
+    নাম: লেখা,
+    বয়স: সংখ্যা
+}
+```
+
+ঘোষণার পর, স্ট্রাক্টের নামটি —
+
+- **একটি `Type`** — `Type` গ্রামারের `Identifier` বিকল্পটি (§১১.১) এভাবেই রেজলভ হয়, একটি প্যারামিটার/রিটার্ন/ভ্যারিয়েবল টাইপ হিসেবে অন্য যেকোনো টাইপের মতোই ব্যবহারযোগ্য।
+- **একটি কনস্ট্রাক্টর ফাংশন** — `Identifier "(" [ ArgumentList ] ")"`, `CallExpression`-এর (§১৩.১) সাধারণ কল-সিনট্যাক্স দিয়ে, ফিল্ডগুলো ঘোষণার ক্রমে পজিশনালি দিয়ে —
+
+```kolom
+ধরি প = ব্যক্তি("রহিম", ২৫)
+```
+
+আর্গুমেন্টের সংখ্যা অবশ্যই ফিল্ডের সংখ্যার সমান হতে হবে, এবং প্রতিটি আর্গুমেন্টের টাইপ তার পজিশনের ফিল্ড-টাইপের সাথে মিলতে হবে (§১১.৩-এর অ্যাসাইনমেন্ট-টাইপ নিয়ম অনুযায়ী) — এই দুটিই কম্পাইল-টাইম ত্রুটি, গ্রামারের নয়, সিমান্টিক অ্যানালাইসিসের (`compiler.md` §৬) অংশ।
+
+ফিল্ড পড়া ও লেখা `.` মেম্বার-অ্যাক্সেস দিয়ে হয় (§১৩.১.১) —
+
+```kolom
+লেখো(প.নাম)
+
+প.বয়স = ২৬
+```
+
+একটি `ডাটা`-র ফিল্ড অন্য যেকোনো `ডাটা` টাইপ রেফার করতে পারে, ফাইলে পরে ঘোষিত একটি টাইপসহ (`FieldList` পার্স করার আগে সব `StructDeclaration`-এর নাম প্রি-রেজিস্টার হয়)। তবে একটি স্ট্রাক্ট নিজেকে *by value* ধারণ করতে পারে না — সরাসরি বা একাধিক ফিল্ডের চেইন দিয়ে — কারণ এমন টাইপের আকার অসীম হয়ে যেত; `শেয়ার`, অ্যারে বা `ম্যাপ` ফিল্ডের মাধ্যমে (এগুলো পয়েন্টার) নিজেকে বা একটি সাইকেল ধারণ করা বৈধ, এবং এভাবেই রিকার্সিভ ডেটা স্ট্রাকচার (লিস্ট, ট্রি) তৈরি হয়।
+
+`ফিল্ড` সেপারেটর হিসেবে `","` ব্যবহার করা প্রথাগত (উপরের উদাহরণের মতো), তবে একটি লাইন টার্মিনেটরও (§৩.৬) `","`-এর জায়গায় গ্রহণযোগ্য — `ParameterList`-এর (§১০.৩) বিপরীতে, যা শুধু `","` মানে।
+
 ---
 
 # ১১. টাইপ
@@ -1115,7 +1173,8 @@ Type =
       PrimitiveType
     | ArrayType
     | SharedType
-    | Identifier ;    (* reserved for future user-defined types *)
+    | MapType
+    | Identifier ;    (* একটি `ডাটা`-ঘোষিত স্ট্রাক্ট টাইপের নাম — §১০.৫ *)
 
 PrimitiveType =
       "সংখ্যা"
@@ -1130,6 +1189,9 @@ ArrayType =
 
 SharedType =
     "শেয়ার" Type ;
+
+MapType =
+    "ম্যাপ" "[" Type "," Type "]" ;
 ```
 
 ## ১১.২ প্রিমিটিভ টাইপ
@@ -1211,6 +1273,22 @@ SharedType =
 
 `SharedType`-এর জন্য `<>` জেনেরিক-প্যারামিটার সিনট্যাক্স ব্যবহার করা হয়নি — এটি ভবিষ্যতের সাধারণ জেনেরিক্স ফিচারের (`language.md` §১৯) পূর্বসূরি নয়, বরং `ArrayType`-এর মতোই একটি স্বতন্ত্র, হার্ডকোডেড টাইপ-কনস্ট্রাক্টর।
 
+## ১১.৬ ম্যাপ টাইপ (`ম্যাপ`)
+
+`MapType`-এর `[` `]` `ArrayType`-এর ইনডেক্স ব্র্যাকেটের মতো নয় — এখানে দুটি `Type` কমা দিয়ে আলাদা, key ও value —
+
+```kolom
+ধরি বয়সসমূহ: ম্যাপ[লেখা, সংখ্যা] = ম্যাপ_তৈরি()
+```
+
+key টাইপ অবশ্যই `লেখা` বা `সংখ্যা` হতে হবে — এই শর্ত সিমান্টিক অ্যানালাইসিসে (`compiler.md` §৬) যাচাই করা হয়, গ্রামারে নয়। value টাইপ যেকোনো `Type` হতে পারে।
+
+`ArrayLiteral`-এর (§১৩.১) বিপরীতে একটি ম্যাপের কোনো লিটারেল সিনট্যাক্স নেই — একটি খালি ম্যাপ তৈরি হয় গ্লোবাল বিল্ট-ইন ফাংশন `ম্যাপ_তৈরি()` দিয়ে (`language.md` §২১), যার নিজের কোনো টাইপ তথ্য বহন করে না, তাই এটি শুধুমাত্র একটি টাইপ-টীকাযুক্ত `VariableDeclaration`-এর (§১০.১) ইনিশিয়ালাইজার হিসেবেই বৈধ — `ArrayType`-এর খালি `[]`-এর (§১১.৪) মতোই আচরণ, একই কারণে।
+
+এন্ট্রি পড়া ও লেখা `CallSuffix`-এর ইনডেক্স ফর্ম দিয়েই হয় (§১৩.১), অ্যারের মতোই — কিন্তু একটি সিমান্টিক পার্থক্যসহ: ম্যাপে ইনডেক্স-অ্যাসাইনমেন্ট (`m[k] = v`) সবসময় বৈধ (নতুন key হলে ইনসার্ট করে, না হলে আপডেট করে), যেখানে অ্যারেতে ইনডেক্স অবশ্যই বিদ্যমান সীমার ভেতরে হতে হয়। একটি অনুপস্থিত key পড়া একটি রানটাইম ত্রুটি, যা `চেষ্টা`/`ধরো` দিয়ে ধরা যায় (§১২.৮)।
+
+ম্যাপ-নির্দিষ্ট বিল্ট-ইন ফাংশন (`ম্যাপ_তৈরি`, `আছে_কি`, `চাবি_গুলো`, `চাবি_মুছো`) `ম্যাপ`-এর মেম্বার নয়, বরং গ্লোবাল ফাংশন — সম্পূর্ণ তালিকার জন্য দেখুন `language.md` §২১।
+
 ---
 
 # ১২. স্টেটমেন্ট
@@ -1228,6 +1306,7 @@ Statement =
     | ReturnStatement
     | BreakStatement
     | ContinueStatement
+    | TryCatchStatement
     | ExpressionStatement
     | Block ;
 
@@ -1298,10 +1377,10 @@ ReturnStatement =
     "ফেরাও" [ Expression ] ;
 
 BreakStatement =
-    "থামো" ;
+    "বিরতি" ;
 
 ContinueStatement =
-    "চালিয়ে_যাও" ;
+    "চলবে" ;
 ```
 
 `ReturnStatement` শুধুমাত্র একটি `FunctionDeclaration` বডির ভেতরে বৈধ। `BreakStatement` ও `ContinueStatement` শুধুমাত্র `LoopStatement`, `WhileStatement`, বা `ForEachStatement`-এর ভেতরে বৈধ।
@@ -1319,6 +1398,36 @@ ExpressionStatement =
 লেখো("হ্যালো বিশ্ব")
 ```
 
+## ১২.৮ Try/Catch স্টেটমেন্ট
+
+```ebnf
+TryCatchStatement =
+    "চেষ্টা" Block
+    "ধরো" "(" Identifier ")" Block ;
+```
+
+```kolom
+ইম্পোর্ট ফাইল
+
+চেষ্টা {
+
+    ধরি content = ফাইল.পড়ো("নেই_এমন_ফাইল.txt")
+
+    লেখো(content)
+
+} ধরো(ত) {
+
+    লেখো("ধরা হয়েছে:")
+
+    লেখো(ত)
+
+}
+```
+
+কলম-এ কোনো `throw`/`raise` স্টেটমেন্ট নেই — একমাত্র ব্যর্থতা যা `চেষ্টা` ধরতে পারে তা রানটাইম নিজেই তোলে (ফাইল/নেটওয়ার্ক I/O ত্রুটি, শূন্য দিয়ে ভাগ, অ্যারে ইনডেক্স সীমার বাইরে, অনুপস্থিত ম্যাপ key)। `Block`-এর ভেতরে ব্যর্থতা ঘটলে নিয়ন্ত্রণ তৎক্ষণাৎ `ধরো`-এর `Block`-এ চলে যায়, ব্যর্থতা-বার্তা `Identifier`-এ (`লেখা` টাইপ) বাউন্ড হয়ে; ব্যর্থতা না ঘটলে `ধরো`-এর `Block` চলে না। `চেষ্টা` ব্লকের বাইরে একই ব্যর্থতা প্রোগ্রাম বন্ধ করে দেয়, স্পষ্ট বাংলা বার্তাসহ (§১৯.৩)।
+
+`TryCatchStatement` কোনো লুপের ভেতরে থাকা আবশ্যক নয় — `BreakStatement`/`ContinueStatement`-এর বিপরীতে (§১২.৬), যেগুলো একটি ঘিরে-রাখা `LoopStatement`/`WhileStatement`/`ForEachStatement` চায়।
+
 ---
 
 # ১৩. এক্সপ্রেশন
@@ -1334,7 +1443,7 @@ AssignmentExpression =
     | LogicalOrExpression ;
 
 AssignmentTarget =
-    Identifier { "[" Expression "]" } ;
+    Identifier { "[" Expression "]" } [ "." Identifier ] ;
 
 LogicalOrExpression =
     LogicalAndExpression { "অথবা" LogicalAndExpression } ;
@@ -1363,13 +1472,14 @@ CallExpression =
 
 CallSuffix =
       "(" [ ArgumentList ] ")"
-    | "[" Expression "]" ;
+    | "[" Expression "]"
+    | "." Identifier ;
 
 ArgumentList =
     Expression { "," Expression } ;
 
 PrimaryExpression =
-      Identifier
+      Identifier [ "." Identifier ]
     | NumberLiteral
     | StringLiteral
     | CharacterLiteral
@@ -1384,9 +1494,18 @@ ArrayLiteral =
 
 `ArrayLiteral` `ArgumentList` (§১৩.১) পুনরায় ব্যবহার করে — একটি অ্যারে লিটারেল সিনট্যাক্টিকভাবে একটি ব্র্যাকেটবদ্ধ, কমা দিয়ে আলাদা করা এক্সপ্রেশন তালিকা, যা ফাংশন কল আর্গুমেন্টের মতোই, শুধু `(` `)`-এর বদলে `[` `]` দিয়ে আবদ্ধ।
 
-`CallSuffix`-এর `"[" Expression "]"` বিকল্পটি অ্যারে ইনডেক্সিং — একটি `CallExpression` চেইনে একাধিক কল ও ইনডেক্স সাফিক্স মিশিয়ে ব্যবহার করা যায় (যেমন `যোগফল(তালিকা)[০]`)। ইনডেক্সিং এক্সপ্রেশনটি অবশ্যই `সংখ্যা` টাইপের হতে হবে; এই শর্ত সিমান্টিক অ্যানালাইসিসে (`compiler.md` §৬) যাচাই করা হয়, গ্রামারে নয়।
+`CallSuffix`-এর `"[" Expression "]"` বিকল্পটি অ্যারে/ম্যাপ ইনডেক্সিং — একটি `CallExpression` চেইনে একাধিক কল, ইনডেক্স ও ফিল্ড সাফিক্স মিশিয়ে ব্যবহার করা যায় (যেমন `যোগফল(তালিকা)[০]`, `প.বাসা.শহর`)। অ্যারে ইনডেক্সিং এক্সপ্রেশন অবশ্যই `সংখ্যা` টাইপের হতে হবে; ম্যাপ ইনডেক্সিং এক্সপ্রেশন ম্যাপের key-টাইপের হতে হবে (§১১.৬)। এই শর্তগুলো সিমান্টিক অ্যানালাইসিসে (`compiler.md` §৬) যাচাই করা হয়, গ্রামারে নয়।
 
-অ্যাসাইনমেন্টের বাম পাশ (`AssignmentTarget`) ইচ্ছাকৃতভাবে `CallExpression`-এর চেয়ে সংকীর্ণ (narrower) — এটি একটি সাধারণ আইডেন্টিফায়ার বা তার পরে এক বা একাধিক `[ Expression ]` ইনডেক্স গ্রহণ করে (যেমন `ধরি`-করা একটি ভ্যারিয়েবল বা `ম্যাট্রিক্স[i][j]`), কিন্তু ফাংশন কলের ফলাফলে সরাসরি অ্যাসাইন করা যায় না (যেমন `যোগ(ক, খ) = ৫` অবৈধ) — ফাংশন কলের ফলাফল কোনো ভ্যালু, ঠিকানা (location) নয়।
+অ্যাসাইনমেন্টের বাম পাশ (`AssignmentTarget`) ইচ্ছাকৃতভাবে `CallExpression`-এর চেয়ে সংকীর্ণ (narrower) — এটি একটি সাধারণ আইডেন্টিফায়ার, তার পরে এক বা একাধিক `[ Expression ]` ইনডেক্স, তার পরে (ঐচ্ছিকভাবে) একটি একক `.` ফিল্ড গ্রহণ করে (যেমন `ধরি`-করা একটি ভ্যারিয়েবল, `ম্যাট্রিক্স[i][j]`, `ম্যাপ["key"]`, বা `প.বয়স`), কিন্তু ফাংশন কলের ফলাফলে সরাসরি অ্যাসাইন করা যায় না (যেমন `যোগ(ক, খ) = ৫` অবৈধ) — ফাংশন কলের ফলাফল কোনো ভ্যালু, ঠিকানা (location) নয়। নেস্টেড ফিল্ড রাইট (যেমন `প.বাসা.শহর = "..."`, একাধিক `.` লেজ) বর্তমানে সমর্থিত নয়, যদিও রিড (`CallSuffix`-এর মাধ্যমে) সমর্থিত।
+
+### ১৩.১.১ মেম্বার অ্যাক্সেস (`.`) — মডিউল আইটেম বনাম স্ট্রাক্ট ফিল্ড
+
+`Identifier "." Identifier` — `PrimaryExpression`-এ একবার, অথবা `CallSuffix`-এ (ফলে `CallExpression` চেইনের যেকোনো ধাপে) — দুটি ভিন্ন জিনিস বোঝাতে পারে, যা গ্রামার নিজে আলাদা করে না —
+
+- **মডিউল আইটেম** — বাম দিকটি একটি ইম্পোর্ট করা মডিউলের নাম হলে (`language.md` §১২): `গণিত.পাই`, `ফাইল.পড়ো(পথ)`।
+- **স্ট্রাক্ট ফিল্ড** — বাম দিকটি একটি লোকাল `ডাটা`-টাইপড ভ্যারিয়েবলে রেজলভ হলে (§১০.৫): `প.নাম`, `প.বয়স`।
+
+এই দ্ব্যর্থতা সিনট্যাক্সে অমীমাংসিত রেখে সিমান্টিক অ্যানালাইসিসে (`compiler.md` §৬) সমাধান করা হয় — বাম দিকের আইডেন্টিফায়ারটি একটি লোকাল স্ট্রাক্ট-টাইপড বাইন্ডিং হিসেবে রেজলভ হয় কিনা তা দিয়ে। এভাবেই `প.বাসা.শহর`-এর মতো একটি চেইন কাজ করে: `প.বাসা` প্রথমে (`PrimaryExpression`-এর `[ "." Identifier ]` দিয়ে) একটি মেম্বার-অ্যাক্সেসে পার্স হয়, তারপর `.শহর` (`CallSuffix`-এর `"." Identifier` দিয়ে) আরেকটি মেম্বার-অ্যাক্সেস যোগ করে — গ্রামার দুই ধাপ সমানভাবে পার্স করে, সিমান্টিক অ্যানালাইসিস প্রতিটি ধাপে নির্ধারণ করে সেটি মডিউল-আইটেম নাকি ফিল্ড।
 
 ## ১৩.২ অপারেটর প্রায়োরিটি
 
@@ -1443,6 +1562,7 @@ WidgetKeyword =
     | "বাটন"
     | "ইনপুট"
     | "ছবি"
+    | "ক্যানভাস"
     | "সারি"
     | "কলাম"
     | "কার্ড"
@@ -1509,7 +1629,8 @@ Program =
 
 TopLevelDeclaration =
       FunctionDeclaration
-    | ConstantDeclaration ;
+    | ConstantDeclaration
+    | StructDeclaration ;
 
 AppDeclaration =
     "অ্যাপ" [ Identifier ] Block ;
@@ -1533,11 +1654,21 @@ Parameter =
 ImportDeclaration =
     "ইম্পোর্ট" Identifier ;
 
+StructDeclaration =
+    "ডাটা" Identifier "{" [ FieldList ] "}" ;
+
+FieldList =
+    Field { "," Field } [ "," ] ;
+
+Field =
+    Identifier ":" Type ;
+
 (* Types — §11 *)
 Type =
       PrimitiveType
     | ArrayType
     | SharedType
+    | MapType
     | Identifier ;
 
 PrimitiveType =
@@ -1548,6 +1679,9 @@ ArrayType =
 
 SharedType =
     "শেয়ার" Type ;
+
+MapType =
+    "ম্যাপ" "[" Type "," Type "]" ;
 
 (* Statements — §12 *)
 Statement =
@@ -1560,6 +1694,7 @@ Statement =
     | ReturnStatement
     | BreakStatement
     | ContinueStatement
+    | TryCatchStatement
     | ExpressionStatement
     | Block ;
 
@@ -1585,10 +1720,13 @@ ReturnStatement =
     "ফেরাও" [ Expression ] ;
 
 BreakStatement =
-    "থামো" ;
+    "বিরতি" ;
 
 ContinueStatement =
-    "চালিয়ে_যাও" ;
+    "চলবে" ;
+
+TryCatchStatement =
+    "চেষ্টা" Block "ধরো" "(" Identifier ")" Block ;
 
 ExpressionStatement =
     Expression ;
@@ -1602,7 +1740,7 @@ AssignmentExpression =
     | LogicalOrExpression ;
 
 AssignmentTarget =
-    Identifier { "[" Expression "]" } ;
+    Identifier { "[" Expression "]" } [ "." Identifier ] ;
 
 LogicalOrExpression =
     LogicalAndExpression { "অথবা" LogicalAndExpression } ;
@@ -1631,13 +1769,14 @@ CallExpression =
 
 CallSuffix =
       "(" [ ArgumentList ] ")"
-    | "[" Expression "]" ;
+    | "[" Expression "]"
+    | "." Identifier ;
 
 ArgumentList =
     Expression { "," Expression } ;
 
 PrimaryExpression =
-      Identifier
+      Identifier [ "." Identifier ]
     | NumberLiteral | StringLiteral | CharacterLiteral | BooleanLiteral | NullLiteral
     | ArrayLiteral
     | "(" Expression ")" ;
@@ -1656,7 +1795,7 @@ ContainerWidgetCall =
     ContainerWidgetKeyword "(" [ ArgumentList ] ")" Block ;
 
 WidgetKeyword =
-      "টেক্সট" | "বাটন" | "ইনপুট" | "ছবি"
+      "টেক্সট" | "বাটন" | "ইনপুট" | "ছবি" | "ক্যানভাস"
     | ContainerWidgetKeyword ;
 
 ContainerWidgetKeyword =
@@ -1723,7 +1862,7 @@ NullLiteral =
 
 # ১৭. AST ম্যাপিং
 
-প্রতিটি গ্রামার রুল ঠিক একটি AST নোড টাইপে ম্যাপ হয়, যা `compiler.md` §৫–§৬-এ বর্ণিত সিমান্টিক অ্যানালাইসিস ধাপে ব্যবহৃত হয়।
+প্রতিটি গ্রামার রুল সাধারণত ঠিক একটি AST নোড টাইপে ম্যাপ হয়, যা `compiler.md` §৫–§৬-এ বর্ণিত সিমান্টিক অ্যানালাইসিস ধাপে ব্যবহৃত হয় — ব্যতিক্রম শুধু `.` মেম্বার অ্যাক্সেস (§১৩.১.১), যা প্রেক্ষাপট অনুযায়ী দুই ধরনের নোডে ম্যাপ হতে পারে, নিচে দেখুন।
 
 | গ্রামার রুল | AST নোড |
 |--------------|----------|
@@ -1741,7 +1880,9 @@ NullLiteral =
 | `ReturnStatement` | `ReturnStmt` |
 | `BreakStatement` | `BreakStmt` |
 | `ContinueStatement` | `ContinueStmt` |
+| `TryCatchStatement` | `TryCatchStmt` |
 | `ExpressionStatement` | `ExprStmt` |
+| `StructDeclaration` | `StructDecl` |
 | `AssignmentExpression` | `AssignExpr` |
 | `LogicalOrExpression` / `LogicalAndExpression` | `LogicalExpr` |
 | `EqualityExpression` / `RelationalExpression` | `BinaryExpr` |
@@ -1749,6 +1890,8 @@ NullLiteral =
 | `UnaryExpression` | `UnaryExpr` |
 | `CallExpression` with a `"(" [ ArgumentList ] ")"` suffix | `CallExpr` |
 | `CallExpression` with a `"[" Expression "]"` suffix | `IndexExpr` |
+| `PrimaryExpression`-এর `"." Identifier` লেজ, অথবা `CallSuffix`-এর `"." Identifier` ফর্ম | `Qualified` (মডিউল-আইটেম রেফারেন্স, অথবা — বাম দিকটি একটি লোকাল স্ট্রাক্ট-টাইপড বাইন্ডিং হলে — স্ট্রাক্ট ফিল্ড রিড; §১৩.১.১) |
+| `AssignmentTarget`-এর `"." Identifier` লেজ | `Assign` (স্ট্রাক্ট ফিল্ড রাইট, `LValue`-এর ফিল্ড হিসেবে বহন করা) |
 | `Identifier` (primary expression হিসেবে) | `Ident` |
 | `NumberLiteral` / `StringLiteral` / `CharacterLiteral` / `BooleanLiteral` / `NullLiteral` | `Literal` |
 | `ArrayLiteral` | `ArrayLit` |
@@ -1772,7 +1915,8 @@ NullLiteral =
 - **ঐচ্ছিক টাইপ অ্যানোটেশন** (`VariableDeclaration`, §১০.১): `ধরি Identifier`-এর পর, লুকঅ্যাহেডে `:` টাইপযুক্ত ফর্ম নির্বাচন করে; `=` ইনফার করা ফর্ম নির্বাচন করে। কোনো ব্যাকট্র্যাকিং প্রয়োজন নেই।
 - **`নাহলে` চেইনিং** (`IfStatement`, §১২.২): একটি অনুগামী `নাহলে`-এর পর `যদি` এলে তা আরেকটি `IfStatement`-এ রিকার্স করে; `নাহলে`-এর পর `{` এলে তা একটি সাধারণ `Block`-এর সাথে মেলে। `নাহলে`-এর পর একটি টোকেন লুকঅ্যাহেডই যথেষ্ট।
 - **কন্টেইনার বনাম লিফ উইজেট** (`WidgetCall` বনাম `ContainerWidgetCall`, §১৫.১): লুকঅ্যাহেড দিয়ে নয়, বরং কোন নির্দিষ্ট `WidgetKeyword` মিলেছে তা দিয়ে নির্ধারিত হয় — `সারি`/`কলাম`/`কার্ড`/`ডায়ালগ`/`স্ক্রল` সবসময় একটি অনুগামী `Block` আশা করে।
-- **অ্যাসাইনমেন্ট বনাম এক্সপ্রেশন স্টেটমেন্ট** (`AssignmentExpression` বনাম `ExpressionStatement`, §১৩.১): `CallSuffix` কল ও ইনডেক্স উভয় ফর্মকে একই পোস্টফিক্স চেইনে অনুমোদন করে বলে, পার্সার প্রথমে সাধারণভাবে পোস্টফিক্স চেইনটি পার্স করে (`Identifier` শুরু করে যত খুশি `CallSuffix`)। এরপর পরবর্তী টোকেন `=` হলে এবং পার্স করা চেইনে শুধু ইনডেক্স সাফিক্স থাকলে (কোনো কল সাফিক্স না থাকলে), এটি `AssignmentExpression` হিসেবে গৃহীত হয়; নইলে এটি `LogicalOrExpression`/`ExpressionStatement`-এ পড়ে যায়। একটি কল সাফিক্সসহ চেইনের পরে `=` এলে (যেমন `যোগ(ক, খ)[০] = ৫`) তা সিনট্যাক্স ত্রুটি, কারণ `AssignmentTarget` শুধুমাত্র বেয়ার `Identifier` থেকে উদ্ভূত হয় (§১৩.১)।
+- **অ্যাসাইনমেন্ট বনাম এক্সপ্রেশন স্টেটমেন্ট** (`AssignmentExpression` বনাম `ExpressionStatement`, §১৩.১): `CallSuffix` কল ও ইনডেক্স উভয় ফর্মকে একই পোস্টফিক্স চেইনে অনুমোদন করে বলে, পার্সার প্রথমে সাধারণভাবে পোস্টফিক্স চেইনটি পার্স করে (`Identifier` শুরু করে যত খুশি `CallSuffix`)। এরপর পরবর্তী টোকেন `=` হলে এবং পার্স করা চেইনে শুধু ইনডেক্স সাফিক্স থাকলে (কোনো কল সাফিক্স না থাকলে), এটি `AssignmentExpression` হিসেবে গৃহীত হয়; নইলে এটি `LogicalOrExpression`/`ExpressionStatement`-এ পড়ে যায়। একটি কল সাফিক্সসহ চেইনের পরে `=` এলে (যেমন `যোগ(ক, খ)[০] = ৫`) তা সিনট্যাক্স ত্রুটি, কারণ `AssignmentTarget` শুধুমাত্র বেয়ার `Identifier`, ইনডেক্স ও একটি একক ফিল্ড থেকে উদ্ভূত হয় (§১৩.১)।
+- **মেম্বার অ্যাক্সেস বনাম মডিউল আইটেম** (`"." Identifier`, §১৩.১.১): উভয়ের গ্রামার অভিন্ন। পার্সার সবসময় একটি `Qualified`-আকৃতির নোড তৈরি করে; মডিউল-আইটেম নাকি স্ট্রাক্ট-ফিল্ড তা সিমান্টিক অ্যানালাইসিসে নির্ধারিত হয়, পার্সিং-এ নয়।
 
 ## ১৮.২ নিউলাইন হ্যান্ডলিং
 

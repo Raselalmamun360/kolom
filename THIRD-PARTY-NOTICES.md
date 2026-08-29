@@ -77,6 +77,8 @@ licensed; none are copyleft.
 | `target-lexicon` | Apache-2.0 WITH LLVM-exception |
 | `object` | Apache-2.0 OR MIT |
 | `windows-sys` | MIT OR Apache-2.0 |
+| `unicode-normalization` | MIT OR Apache-2.0 |
+| `tinyvec`, `tinyvec_macros` | Zlib OR Apache-2.0 OR MIT |
 
 A complete, machine-generated inventory can be produced with
 [`cargo-about`](https://github.com/EmbarkStudios/cargo-about) or

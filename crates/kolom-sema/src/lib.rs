@@ -35,22 +35,27 @@ pub fn stdlib_lookup(module: &str, item: &str) -> Option<StdSig> {
     Some(match (module, item) {
         ("গণিত", "পাই") => Const(d()),
         ("গণিত", "ই") => Const(d()),
-        ("গণিত", "পরম") => Fn(vec![i()], i()),
-        ("গণিত", "পরমদ") => Fn(vec![d()], d()),
         ("গণিত", "বর্গমূল") => Fn(vec![d()], d()),
-        ("গণিত", "শক্তি") => Fn(vec![d(), d()], d()),
-        ("গণিত", "বেস") => Fn(vec![d()], i()),
-        ("গণিত", "আপার") => Fn(vec![d()], i()),
+        ("গণিত", "ঘাত") => Fn(vec![d(), d()], d()),
+        ("গণিত", "নিম্নমান") => Fn(vec![d()], i()),
+        ("গণিত", "উর্ধ্বমান") => Fn(vec![d()], i()),
         ("গণিত", "রাউন্ডঅফ") => Fn(vec![d()], i()),
         ("গণিত", "সাইন") => Fn(vec![d()], d()),
         ("গণিত", "কোসাইন") => Fn(vec![d()], d()),
         ("গণিত", "ট্যান") => Fn(vec![d()], d()),
+        // `লগ` is base ten, the way an unmarked "log" is read in Bangladeshi
+        // schooling; the natural logarithm is spelled out. It used to be the
+        // other way round, which quietly returned ln to anyone who wrote what
+        // they were taught.
         ("গণিত", "লগ") => Fn(vec![d()], d()),
-        ("গণিত", "লগ১০") => Fn(vec![d()], d()),
-        ("গণিত", "ছোটসংখ্যা") => Fn(vec![i(), i()], i()),
-        ("গণিত", "বড়সংখ্যা") => Fn(vec![i(), i()], i()),
-        ("গণিত", "ছোটদশমিক") => Fn(vec![d(), d()], d()),
-        ("গণিত", "বড়দশমিক") => Fn(vec![d(), d()], d()),
+        ("গণিত", "লন") => Fn(vec![d()], d()),
+        // These three take সংখ্যা or দশমিক — `check_math_overload` decides,
+        // and intercepts the call before this signature is consulted. The
+        // entries exist so `গণিত.সর্বনিম্ন` is still *found* when it appears
+        // outside a call.
+        ("গণিত", "পরম_মান") => Fn(vec![i()], i()),
+        ("গণিত", "সর্বনিম্ন") => Fn(vec![i(), i()], i()),
+        ("গণিত", "সর্বোচ্চ") => Fn(vec![i(), i()], i()),
 
         ("লেখা", "বড়হাতের") => Fn(vec![s()], s()),
         ("লেখা", "ছোটহাতের") => Fn(vec![s()], s()),
@@ -206,6 +211,12 @@ struct Ck {
     /// Names of all declared `ডাটা` types, collected before any field type
     /// is resolved so a struct may reference one declared later in the file.
     struct_names: std::collections::HashSet<String>,
+    /// Imports that name one of the user's own `.ক` files rather than a
+    /// standard-library module. Their contents are merged into this program
+    /// before analysis, so the module name itself is never a value — which
+    /// makes `helper.foo()` an error, and this set is what lets that error
+    /// say so instead of claiming the import is missing.
+    user_imports: std::collections::HashSet<String>,
 }
 
 pub fn analyze(prog: &Program) -> Vec<Diagnostic> {
@@ -222,6 +233,7 @@ pub fn analyze_typed(prog: &Program) -> (Vec<Diagnostic>, Types) {
         imports: std::collections::HashSet::new(),
         structs: HashMap::new(),
         struct_names: std::collections::HashSet::new(),
+        user_imports: std::collections::HashSet::new(),
     };
     ck.check_program(prog);
     let types = std::mem::take(&mut ck.types);
@@ -349,6 +361,24 @@ impl Ck {
         }
     }
 
+    /// Why `module.item` could not be resolved. An import the user wrote
+    /// themselves needs a different answer from one they forgot: their own
+    /// module's functions are called by bare name, because its declarations
+    /// are merged into this program rather than kept behind a namespace.
+    fn unknown_module_msg(&self, module: &str) -> String {
+        if self.user_imports.contains(module) {
+            format!(
+                "'{}' আপনার নিজের মডিউল — এর ফাংশন ও ধ্রুবক সরাসরি নাম দিয়ে ব্যবহার করুন, '{}.' ছাড়া",
+                module, module
+            )
+        } else {
+            format!(
+                "মডিউল '{}' ইম্পোর্ট করা হয়নি — ফাইলের শুরুতে 'ইম্পোর্ট {}' দিন",
+                module, module
+            )
+        }
+    }
+
     fn check_program(&mut self, prog: &Program) {
         for imp in &prog.imports {
             if STDLIB_MODULES.contains(&imp.name.as_str()) {
@@ -358,6 +388,8 @@ impl Ck {
                         format!("'{}' আগেই ইম্পোর্ট করা হয়েছে", imp.name),
                     );
                 }
+            } else {
+                self.user_imports.insert(imp.name.clone());
             }
         }
         // Pass 1: every `ডাটা` name, so field types below may refer to a
@@ -1056,13 +1088,8 @@ impl Ck {
                     }
                 }
                 if !self.imports.contains(&module.name) {
-                    self.err(
-                        module.pos,
-                        format!(
-                            "মডিউল '{}' ইম্পোর্ট করা হয়নি — ফাইলের শুরুতে 'ইম্পোর্ট {}' দিন",
-                            module.name, module.name
-                        ),
-                    );
+                    let msg = self.unknown_module_msg(&module.name);
+                    self.err(module.pos, msg);
                     return None;
                 }
                 match stdlib_lookup(&module.name, &name.name) {
@@ -1162,13 +1189,8 @@ impl Ck {
                             None
                         } else {
                             if !self.imports.contains(&module.name) {
-                                self.err(
-                                    module.pos,
-                                    format!(
-                                        "মডিউল '{}' ইম্পোর্ট করা হয়নি — 'ইম্পোর্ট {}' দিন",
-                                        module.name, module.name
-                                    ),
-                                );
+                                let msg = self.unknown_module_msg(&module.name);
+                                self.err(module.pos, msg);
                             }
                             Some(format!("{}::{}", module.name, name.name))
                         }
@@ -1643,13 +1665,74 @@ impl Ck {
         }
     }
 
+    /// `পরম_মান`, `সর্বনিম্ন` and `সর্বোচ্চ` accept either `সংখ্যা` or
+    /// `দশমিক` and give back the same type. Returns `None` for anything else,
+    /// leaving it to the ordinary signature table.
+    ///
+    /// Kolom has no general overloading, so this is a deliberate special case.
+    /// The alternative is a separate name per type, which is where `পরমদ` and
+    /// `ছোটদশমিক` came from — names that describe an implementation detail
+    /// rather than what the function does.
+    ///
+    /// Mixed arguments are rejected rather than promoted: nothing else in the
+    /// language converts `সংখ্যা` to `দশমিক` on its own, and doing it here
+    /// alone would be a surprise.
+    fn check_math_overload(&mut self, item: &str, pos: Pos, args: &[Expr]) -> Option<Ty> {
+        let arity = match item {
+            "পরম_মান" => 1,
+            "সর্বনিম্ন" | "সর্বোচ্চ" => 2,
+            _ => return None,
+        };
+        if args.len() != arity {
+            self.err(
+                pos,
+                format!(
+                    "'গণিত.{}' {}টি আর্গুমেন্ট নেয়, {}টি পেয়েছে",
+                    item,
+                    bn_num(arity as u32),
+                    bn_num(args.len() as u32)
+                ),
+            );
+            for a in args {
+                let _ = self.expr(a);
+            }
+            return Some(Ty::Err);
+        }
+        let tys: Vec<Ty> = args.iter().map(|a| self.expr(a).unwrap_or(Ty::Unknown)).collect();
+        if tys.iter().any(|t| matches!(t, Ty::Err | Ty::Unknown)) {
+            return Some(Ty::Err);
+        }
+        if tys.iter().all(|t| matches!(t, Ty::Num)) {
+            return Some(Ty::Num);
+        }
+        if tys.iter().all(|t| matches!(t, Ty::Dec)) {
+            return Some(Ty::Dec);
+        }
+        let shown: Vec<String> = tys.iter().map(|t| t.to_string()).collect();
+        self.err(
+            pos,
+            format!(
+                "'গণিত.{}'-এর সব আর্গুমেন্ট একই টাইপের হতে হবে — সবগুলো 'সংখ্যা' অথবা সবগুলো 'দশমিক' ({} পাওয়া গেছে)",
+                item,
+                shown.join(", ")
+            ),
+        );
+        Some(Ty::Err)
+    }
+
     fn call_stdlib(&mut self, module: &str, item: &str, pos: Pos, args: &[Expr]) -> Ty {
         if !self.imports.contains(module) {
-            self.err(pos, format!("মডিউল '{}' ইম্পোর্ট করা হয়নি", module));
+            let msg = self.unknown_module_msg(module);
+            self.err(pos, msg);
             return Ty::Err;
         }
         if module == "গ্রাফিক্স" && item == "টিক" {
             return self.check_tick(pos, args);
+        }
+        if module == "গণিত" {
+            if let Some(t) = self.check_math_overload(item, pos, args) {
+                return t;
+            }
         }
         let sig = match stdlib_lookup(module, item) {
             Some(StdSig::Fn(p, r)) => (p, r),

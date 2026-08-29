@@ -20,8 +20,8 @@ pub const KEYWORDS: &[&str] = &[
     "লুপ",
     "যতক্ষণ",
     "প্রতি",
-    "থামো",
-    "চলো",
+    "বিরতি",
+    "চলবে",
     "ইম্পোর্ট",
     "সত্য",
     "মিথ্যা",
@@ -509,6 +509,22 @@ impl Lx {
                 break;
             }
         }
+        // Bengali text has more than one encoding for the same letter, and
+        // input methods disagree about which to emit. `য়` is either U+09DF or
+        // `য` followed by a nukta, and `ড়`/`ঢ়` likewise — Unicode lists all
+        // three as composition exclusions, so NFC settles on the two-codepoint
+        // form. Two files can therefore look identical on screen and compare
+        // unequal: before this, `শেয়ার` and `ডায়ালগ` typed the precomposed way
+        // were not recognized as keywords at all, and the resulting parse error
+        // pointed at text that looked perfectly correct.
+        //
+        // Normalizing identifiers (and so keywords) matches what UAX #31
+        // prescribes. String literals are deliberately left exactly as written:
+        // they are program data, not names to be matched.
+        let s: String = {
+            use unicode_normalization::UnicodeNormalization;
+            s.nfc().collect()
+        };
         let kind = match KEYWORDS.iter().find(|k| **k == s.as_str()) {
             Some(kw) => TokenKind::Kw(kw),
             None => TokenKind::Ident(s),

@@ -795,9 +795,8 @@ impl<'o> Interp<'o> {
         }
         match (module, item, vals.as_slice()) {
             // গণিত
-            ("গণিত", "পরম", [Value::Num(x)]) => Ok(Value::Num(x.abs())),
-            ("গণিত", "পরমদ", [Value::Dec(x)]) => Ok(Value::Dec(x.abs())),
-            ("গণিত", "পরমদ", [Value::Num(x)]) => Ok(Value::Dec(*x as f64)),
+            ("গণিত", "পরম_মান", [Value::Num(x)]) => Ok(Value::Num(x.abs())),
+            ("গণিত", "পরম_মান", [Value::Dec(x)]) => Ok(Value::Dec(x.abs())),
             ("গণিত", "বর্গমূল", [Value::Dec(x)]) => {
                 if *x < 0.0 {
                     Err(err(pos, "বর্গমূলে ঋণাত্মক সংখ্যা নেয় না"))
@@ -812,26 +811,26 @@ impl<'o> Interp<'o> {
                     Ok(Value::Dec((*x as f64).sqrt()))
                 }
             }
-            ("গণিত", "শক্তি", [a, b]) => Ok(Value::Dec(num_f(a)?.powf(num_f(b)?))),
-            ("গণিত", "বেস", [v]) => Ok(Value::Num(num_f(v)?.floor() as i64)),
-            ("গণিত", "আপার", [v]) => Ok(Value::Num(num_f(v)?.ceil() as i64)),
+            ("গণিত", "ঘাত", [a, b]) => Ok(Value::Dec(num_f(a)?.powf(num_f(b)?))),
+            ("গণিত", "নিম্নমান", [v]) => Ok(Value::Num(num_f(v)?.floor() as i64)),
+            ("গণিত", "উর্ধ্বমান", [v]) => Ok(Value::Num(num_f(v)?.ceil() as i64)),
             ("গণিত", "রাউন্ডঅফ", [v]) => Ok(Value::Num(num_f(v)?.round() as i64)),
             ("গণিত", "সাইন", [v]) => Ok(Value::Dec(num_f(v)?.sin())),
             ("গণিত", "কোসাইন", [v]) => Ok(Value::Dec(num_f(v)?.cos())),
             ("গণিত", "ট্যান", [v]) => Ok(Value::Dec(num_f(v)?.tan())),
-            ("গণিত", "লগ", [v]) => Ok(Value::Dec(num_f(v)?.ln())),
-            ("গণিত", "লগ১০", [v]) => Ok(Value::Dec(num_f(v)?.log10())),
-            ("গণিত", "ছোটসংখ্যা", [Value::Num(a), Value::Num(b)]) => {
+            ("গণিত", "লগ", [v]) => Ok(Value::Dec(num_f(v)?.log10())),
+            ("গণিত", "লন", [v]) => Ok(Value::Dec(num_f(v)?.ln())),
+            ("গণিত", "সর্বনিম্ন", [Value::Num(a), Value::Num(b)]) => {
                 Ok(Value::Num(*a.min(b)))
             }
-            ("গণিত", "বড়সংখ্যা", [Value::Num(a), Value::Num(b)]) => {
+            ("গণিত", "সর্বোচ্চ", [Value::Num(a), Value::Num(b)]) => {
                 Ok(Value::Num(*a.max(b)))
             }
-            ("গণিত", "ছোটদশমিক", [a, b]) => {
+            ("গণিত", "সর্বনিম্ন", [a, b]) => {
                 let (x, y) = (num_f(a)?, num_f(b)?);
                 Ok(Value::Dec(x.min(y)))
             }
-            ("গণিত", "বড়দশমিক", [a, b]) => {
+            ("গণিত", "সর্বোচ্চ", [a, b]) => {
                 let (x, y) = (num_f(a)?, num_f(b)?);
                 Ok(Value::Dec(x.max(y)))
             }

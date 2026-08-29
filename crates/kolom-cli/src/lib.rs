@@ -90,7 +90,10 @@ pub fn resolve_user_modules(
         prog.funcs.extend(sub_prog.funcs.drain(..));
         prog.consts.extend(sub_prog.consts.drain(..));
     }
-    prog.imports
-        .retain(|i| kolom_sema::STDLIB_MODULES.contains(&i.name.as_str()));
+    // The user's own imports stay in the list even though their declarations
+    // have just been merged in. Nothing downstream is confused by them — sema
+    // and the C backend both select on STDLIB_MODULES — and keeping them is
+    // what lets sema tell `helper.foo()` (a real module, used with a prefix it
+    // does not have) apart from a module that was never imported at all.
     Ok(())
 }

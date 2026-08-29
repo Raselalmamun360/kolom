@@ -21,6 +21,14 @@ fn golden_04_control_flow() {
     assert_matches_reference("04_control_flow");
 }
 
+/// `চলবে` and `বিরতি` across all three loop forms. Continue had no fixture at
+/// all until the keyword was renamed from `চলো`, so this covers both the new
+/// spelling and a control-flow path that was previously untested end to end.
+#[test]
+fn golden_36_continue() {
+    assert_matches_reference("36_continue");
+}
+
 #[test]
 fn golden_01_hello() {
     assert_matches_reference("01_hello");

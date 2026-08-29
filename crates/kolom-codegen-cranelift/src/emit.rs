@@ -22,7 +22,7 @@
 //! aren't supported yet.
 
 use cranelift_codegen::ir::condcodes::{FloatCC, IntCC};
-use cranelift_codegen::ir::{types, AbiParam, InstBuilder, Signature, StackSlotData, StackSlotKind, Type as ClifType, Value};
+use cranelift_codegen::ir::{types, AbiParam, BlockArg, InstBuilder, Signature, StackSlotData, StackSlotKind, Type as ClifType, Value};
 use cranelift_codegen::ir::MemFlagsData;
 use cranelift_codegen::settings::{self, Configurable};
 use cranelift_frontend::{FunctionBuilder, FunctionBuilderContext, Variable};
@@ -71,6 +71,28 @@ fn is_owning(ty: &Ty) -> bool {
     matches!(ty, Ty::Txt | Ty::Arr(_) | Ty::Shared(_) | Ty::Struct(_) | Ty::Map(_, _))
 }
 
+/// Runtime entry points that can report a failure — the complete set of
+/// places a Kolom program can raise one, since the language has no `throw`.
+///
+/// Inside a `চেষ্টা` block, generated code polls immediately after each of
+/// these. Polling once per *statement* is not enough: `ফেরাও ফাইল.পড়ো(পথ)`
+/// would return the failed call's placeholder before any statement boundary
+/// arrived, and `যদি (ফাইল.পড়ো(পথ) == "ক")` would branch on it.
+const FALLIBLE_RT: &[&str] = &[
+    "kl_io_write_file",
+    "kl_io_append_file",
+    "kl_io_read_file",
+    "kl_fs_mkdir",
+    "kl_fs_remove",
+    "kl_fs_copy",
+    "kl_fs_rename",
+    "kl_map_missing_key",
+    "kl_net_connect",
+    "kl_net_send",
+    "kl_net_recv",
+    "kl_fail_div_zero",
+];
+
 #[derive(Clone)]
 struct Sym {
     ty: Ty,
@@ -93,6 +115,10 @@ struct StructLayout {
 struct LoopCtx {
     continue_block: cranelift_codegen::ir::Block,
     break_block: cranelift_codegen::ir::Block,
+    /// `Gen::try_depth` as it stood when this loop was entered. `বিরতি`/`চলবে`
+    /// may jump out of `চেষ্টা` blocks opened inside the loop, and each of
+    /// those has to be closed on the way out — see `unwind_tries`.
+    try_depth: usize,
 }
 
 struct Env {
@@ -200,15 +226,35 @@ pub struct Gen {
     /// avoids one named `Gen` field per function for the ~40-function
     /// standard library (see `emit()`'s `stdlib_imports` table).
     rt: HashMap<&'static str, FuncId>,
+
+    /// How many `চেষ্টা` blocks enclose the statement being lowered. Any jump
+    /// that leaves them — `ফেরাও`, `বিরতি`, `চলবে` — has to tell the runtime,
+    /// or its depth counter would never come back down and later failures
+    /// would be swallowed by a block that has already finished.
+    try_depth: usize,
+
+    /// Handler blocks of the enclosing `চেষ্টা` blocks, innermost last. Empty
+    /// outside any block, which is what makes polling free in ordinary code:
+    /// nothing is emitted at all.
+    try_handlers: Vec<cranelift_codegen::ir::Block>,
 }
 
 impl Gen {
     /// Calls a named import from `rt` and returns its (single) result value.
+    ///
+    /// A fallible callee is followed by a poll, so the result cannot be used
+    /// before the failure it stands in for has been noticed. The value stays
+    /// usable across that poll: the block it was defined in dominates the one
+    /// execution continues into.
     fn call_rt(&mut self, b: &mut FunctionBuilder, name: &str, args: &[Value]) -> Value {
         let id = *self.rt.get(name).unwrap_or_else(|| panic!("internal: unknown runtime fn '{}'", name));
         let f = self.module.declare_func_in_func(id, b.func);
         let call = b.ins().call(f, args);
-        b.inst_results(call)[0]
+        let out = b.inst_results(call)[0];
+        if FALLIBLE_RT.contains(&name) {
+            self.maybe_poll(b);
+        }
+        out
     }
 
     /// Like `call_rt` but for void-returning imports.
@@ -216,6 +262,9 @@ impl Gen {
         let id = *self.rt.get(name).unwrap_or_else(|| panic!("internal: unknown runtime fn '{}'", name));
         let f = self.module.declare_func_in_func(id, b.func);
         b.ins().call(f, args);
+        if FALLIBLE_RT.contains(&name) {
+            self.maybe_poll(b);
+        }
     }
     fn clif_ty_of(&self, ty: &Ty) -> ClifType {
         match ty {
@@ -411,7 +460,13 @@ impl Gen {
         let lv = self.lower_expr(b, l, env)?;
         let rv = self.lower_expr(b, r, env)?;
         match (lv, rv) {
-            (CVal::Num(a), CVal::Num(c)) => num_binop(b, op, a, c),
+            (CVal::Num(a), CVal::Num(c)) => match op {
+                // `sdiv`/`srem` trap in hardware on a zero divisor, and a
+                // hardware trap cannot be caught by `চেষ্টা`. Test first and
+                // route a zero through the runtime instead.
+                BinOp::Div | BinOp::Mod => Ok(CVal::Num(self.lower_int_div(b, op, a, c))),
+                _ => num_binop(b, op, a, c),
+            },
             (CVal::Dec(a), CVal::Dec(c)) => dec_binop(b, op, a, c),
             (CVal::Bool(a), CVal::Bool(c)) => bool_binop(b, op, a, c),
             (CVal::Txt(a), CVal::Txt(c)) => match op {
@@ -624,6 +679,11 @@ impl Gen {
                 let f = self.module.declare_func_in_func(self.arr_get_ptr, b.func);
                 let call = b.ins().call(f, &[ptr, idx_val]);
                 let addr = b.inst_results(call)[0];
+                // Out of range is catchable, and `kl_arr_get_ptr` answers a
+                // failed lookup with an inert slot. Poll before loading from
+                // it. (This one is reached through a named `FuncId` rather
+                // than `rt`, so `call_rt`'s own poll does not apply.)
+                self.maybe_poll(b);
                 Ok(self.load_cval(b, &elem_ty, addr, 0))
             }
             CVal::Map(map_ptr, _key_ty, val_ty) => {
@@ -632,15 +692,29 @@ impl Gen {
                 let slot = self.call_rt(b, "kl_map_find", &[map_ptr, key_bits]);
                 let zero = b.ins().iconst(self.ptr_ty, 0);
                 let found = b.ins().icmp(IntCC::NotEqual, slot, zero);
+                // A missing key is catchable, so the failure path has to
+                // rejoin rather than trap: it reports the error and merges
+                // with the inert scratch slot, which the poll after this
+                // statement discards before anything can read it.
                 let ok_blk = b.create_block();
                 let bad_blk = b.create_block();
+                let merge_blk = b.create_block();
+                b.append_block_param(merge_blk, self.ptr_ty);
                 b.ins().brif(found, ok_blk, &[], bad_blk, &[]);
+
                 b.switch_to_block(bad_blk);
                 b.seal_block(bad_blk);
                 self.call_rt_void(b, "kl_map_missing_key", &[]);
-                b.ins().trap(cranelift_codegen::ir::TrapCode::unwrap_user(1));
+                let scratch = self.call_rt(b, "kl_err_scratch", &[]);
+                b.ins().jump(merge_blk, &[BlockArg::Value(scratch)]);
+
                 b.switch_to_block(ok_blk);
                 b.seal_block(ok_blk);
+                b.ins().jump(merge_blk, &[BlockArg::Value(slot)]);
+
+                b.switch_to_block(merge_blk);
+                b.seal_block(merge_blk);
+                let slot = b.block_params(merge_blk)[0];
                 Ok(self.load_cval(b, &val_ty, slot, 0))
             }
             _ => Err("M3 codegen: '[]' শুধু array/map-এ ব্যবহার করা যায়".into()),
@@ -943,41 +1017,43 @@ impl Gen {
             }};
         }
         match (module, item) {
-            ("গণিত", "পরম") => num1!("kl_math_abs"),
-            ("গণিত", "পরমদ") => dec1!("kl_math_fabs"),
             ("গণিত", "বর্গমূল") => dec1!("kl_math_sqrt"),
-            ("গণিত", "বেস") => dec1_num!("kl_math_floor"),
-            ("গণিত", "আপার") => dec1_num!("kl_math_ceil"),
+            ("গণিত", "নিম্নমান") => dec1_num!("kl_math_floor"),
+            ("গণিত", "উর্ধ্বমান") => dec1_num!("kl_math_ceil"),
             ("গণিত", "রাউন্ডঅফ") => dec1_num!("kl_math_round"),
             ("গণিত", "সাইন") => dec1!("kl_math_sin"),
             ("গণিত", "কোসাইন") => dec1!("kl_math_cos"),
             ("গণিত", "ট্যান") => dec1!("kl_math_tan"),
-            ("গণিত", "লগ") => dec1!("kl_math_ln"),
-            ("গণিত", "লগ১০") => dec1!("kl_math_log10"),
-            ("গণিত", "শক্তি") => {
+            ("গণিত", "লগ") => dec1!("kl_math_log10"),
+            ("গণিত", "লন") => dec1!("kl_math_ln"),
+            ("গণিত", "ঘাত") => {
                 let a = self.lower_expr_dec(b, &args[0], env)?;
                 let c = self.lower_expr_dec(b, &args[1], env)?;
                 Ok(CVal::Dec(self.call_rt(b, "kl_math_pow", &[a, c])))
             }
-            ("গণিত", "ছোটসংখ্যা") => {
-                let a = self.lower_expr_num(b, &args[0], env)?;
-                let c = self.lower_expr_num(b, &args[1], env)?;
-                Ok(CVal::Num(self.call_rt(b, "kl_math_min_i", &[a, c])))
-            }
-            ("গণিত", "বড়সংখ্যা") => {
-                let a = self.lower_expr_num(b, &args[0], env)?;
-                let c = self.lower_expr_num(b, &args[1], env)?;
-                Ok(CVal::Num(self.call_rt(b, "kl_math_max_i", &[a, c])))
-            }
-            ("গণিত", "ছোটদশমিক") => {
-                let a = self.lower_expr_dec(b, &args[0], env)?;
-                let c = self.lower_expr_dec(b, &args[1], env)?;
-                Ok(CVal::Dec(self.call_rt(b, "kl_math_min_f", &[a, c])))
-            }
-            ("গণিত", "বড়দশমিক") => {
-                let a = self.lower_expr_dec(b, &args[0], env)?;
-                let c = self.lower_expr_dec(b, &args[1], env)?;
-                Ok(CVal::Dec(self.call_rt(b, "kl_math_max_f", &[a, c])))
+            // `পরম_মান`, `সর্বনিম্ন` and `সর্বোচ্চ` take সংখ্যা or দশমিক.
+            // Sema has already established that every argument agrees, so
+            // lowering the first one decides which runtime call to make.
+            ("গণিত", "পরম_মান") => match self.lower_expr(b, &args[0], env)? {
+                CVal::Dec(x) => Ok(CVal::Dec(self.call_rt(b, "kl_math_fabs", &[x]))),
+                CVal::Num(x) => Ok(CVal::Num(self.call_rt(b, "kl_math_abs", &[x]))),
+                _ => Err("M3 codegen: 'গণিত.পরম_মান'-এ 'সংখ্যা' বা 'দশমিক' দরকার".into()),
+            },
+            ("গণিত", "সর্বনিম্ন") | ("গণিত", "সর্বোচ্চ") => {
+                let lo = item == "সর্বনিম্ন";
+                match self.lower_expr(b, &args[0], env)? {
+                    CVal::Dec(a) => {
+                        let c = self.lower_expr_dec(b, &args[1], env)?;
+                        let f = if lo { "kl_math_min_f" } else { "kl_math_max_f" };
+                        Ok(CVal::Dec(self.call_rt(b, f, &[a, c])))
+                    }
+                    CVal::Num(a) => {
+                        let c = self.lower_expr_num(b, &args[1], env)?;
+                        let f = if lo { "kl_math_min_i" } else { "kl_math_max_i" };
+                        Ok(CVal::Num(self.call_rt(b, f, &[a, c])))
+                    }
+                    _ => Err("M3 codegen: 'গণিত.সর্বনিম্ন/সর্বোচ্চ'-এ 'সংখ্যা' বা 'দশমিক' দরকার".into()),
+                }
             }
 
             ("লেখা", "বড়হাতের") => txt1_txt!("kl_str_upper"),
@@ -1221,6 +1297,156 @@ impl Gen {
         Ok(())
     }
 
+    /// Closes every `চেষ্টা` block between the current depth and `target`,
+    /// innermost first. Used by the three statements that jump out of one.
+    fn unwind_tries(&mut self, b: &mut FunctionBuilder, target: usize) {
+        for _ in target..self.try_depth {
+            self.call_rt_void(b, "kl_try_exit", &[]);
+        }
+    }
+
+    /// `a / b` and `a % b` on whole numbers, with the zero divisor split out.
+    ///
+    /// Returning zero on the failure path is not a result the program can
+    /// observe: `kl_fail_div_zero` either ends the process (no `চেষ্টা`
+    /// active) or records the failure, and in the latter case the poll that
+    /// closes this statement branches to the handler before the value is read.
+    fn lower_int_div(&mut self, b: &mut FunctionBuilder, op: BinOp, a: Value, c: Value) -> Value {
+        let i64t = ClifType::int(64).unwrap();
+        let zero = b.ins().iconst(i64t, 0);
+        let is_zero = b.ins().icmp(IntCC::Equal, c, zero);
+
+        let fail_blk = b.create_block();
+        let ok_blk = b.create_block();
+        let merge_blk = b.create_block();
+        b.append_block_param(merge_blk, i64t);
+        b.ins().brif(is_zero, fail_blk, &[], ok_blk, &[]);
+
+        b.switch_to_block(fail_blk);
+        b.seal_block(fail_blk);
+        self.call_rt_void(b, "kl_fail_div_zero", &[]);
+        let dummy = b.ins().iconst(i64t, 0);
+        b.ins().jump(merge_blk, &[BlockArg::Value(dummy)]);
+
+        b.switch_to_block(ok_blk);
+        b.seal_block(ok_blk);
+        let r = if matches!(op, BinOp::Mod) { b.ins().srem(a, c) } else { b.ins().sdiv(a, c) };
+        b.ins().jump(merge_blk, &[BlockArg::Value(r)]);
+
+        b.switch_to_block(merge_blk);
+        b.seal_block(merge_blk);
+        b.block_params(merge_blk)[0]
+    }
+
+    /// Polls for a pending failure if a `চেষ্টা` block is open, branching to
+    /// the innermost handler. Emits nothing outside one.
+    fn maybe_poll(&mut self, b: &mut FunctionBuilder) {
+        if let Some(h) = self.try_handlers.last().copied() {
+            self.emit_err_poll(b, h);
+        }
+    }
+
+    /// Branches to `handler` if the runtime has a failure waiting.
+    fn emit_err_poll(&mut self, b: &mut FunctionBuilder, handler: cranelift_codegen::ir::Block) {
+        let pending = self.call_rt(b, "kl_err_pending", &[]);
+        let cont = b.create_block();
+        b.ins().brif(pending, handler, &[], cont, &[]);
+        b.switch_to_block(cont);
+        b.seal_block(cont);
+    }
+
+    /// `চেষ্টা { ... } ধরো(e) { ... }`.
+    ///
+    /// Kolom has no `throw`: failures are raised by the runtime, which records
+    /// them rather than exiting while a block is open (see kolom-runtime's
+    /// error section). So this needs no unwinding — the body simply asks after
+    /// each statement whether anything went wrong, and the handler collects
+    /// the message.
+    ///
+    /// Known limitation, shared with `ফেরাও`/`বিরতি`/`চলবে` leaving a scope
+    /// early: values bound in the body before the failure are not decref'd on
+    /// the way to the handler. That leaks rather than double-frees, which is
+    /// the same trade the rest of this backend already makes.
+    fn lower_try_catch(
+        &mut self,
+        b: &mut FunctionBuilder,
+        tc: &TryCatchStmt,
+        env: &mut Env,
+        loops: &mut Vec<LoopCtx>,
+    ) -> Result<bool, String> {
+        let handler_blk = b.create_block();
+        let done_blk = b.create_block();
+
+        self.call_rt_void(b, "kl_try_enter", &[]);
+        self.try_depth += 1;
+        self.try_handlers.push(handler_blk);
+
+        env.push();
+        let mut body_term = false;
+        for st in &tc.body.stmts {
+            if body_term {
+                break;
+            }
+            body_term = self.lower_stmt(b, st, env, loops)?;
+            if !body_term {
+                // `FALLIBLE_RT` already polls at each call that can raise, so
+                // this boundary poll is a backstop: if that list ever falls
+                // behind the runtime, a missed failure surfaces one statement
+                // late instead of being swallowed for the rest of the block.
+                self.emit_err_poll(b, handler_blk);
+            }
+        }
+        // An empty body still needs one poll, so `handler_blk` has a
+        // predecessor and the block stays well-formed.
+        if tc.body.stmts.is_empty() {
+            self.emit_err_poll(b, handler_blk);
+        }
+        let body_scope = env.pop_scope();
+
+        self.try_handlers.pop();
+        self.try_depth -= 1;
+        if !body_term {
+            self.decref_scope(b, &body_scope)?;
+            self.call_rt_void(b, "kl_try_exit", &[]);
+            b.ins().jump(done_blk, &[]);
+        }
+
+        // Handler. `kl_err_take` hands over the message as a fresh string the
+        // handler owns, so it is decref'd with the rest of the scope.
+        b.switch_to_block(handler_blk);
+        b.seal_block(handler_blk);
+        self.call_rt_void(b, "kl_try_exit", &[]);
+        let msg = self.call_rt(b, "kl_err_take", &[]);
+        env.push();
+        let var = b.declare_var(self.ptr_ty);
+        b.def_var(var, msg);
+        env.insert(tc.err_var.name.clone(), Sym { ty: Ty::Txt, var });
+        let mut handler_term = false;
+        for st in &tc.handler.stmts {
+            if handler_term {
+                break;
+            }
+            handler_term = self.lower_stmt(b, st, env, loops)?;
+        }
+        let handler_scope = env.pop_scope();
+        if !handler_term {
+            self.decref_scope(b, &handler_scope)?;
+            b.ins().jump(done_blk, &[]);
+        }
+
+        if body_term && handler_term {
+            // Nothing reaches `done_blk`. Keep it well-formed and report the
+            // statement as terminating, so no further code is emitted into it.
+            b.switch_to_block(done_blk);
+            b.seal_block(done_blk);
+            b.ins().trap(cranelift_codegen::ir::TrapCode::unwrap_user(1));
+            return Ok(true);
+        }
+        b.switch_to_block(done_blk);
+        b.seal_block(done_blk);
+        Ok(false)
+    }
+
     fn decref_scope(&mut self, b: &mut FunctionBuilder, scope: &HashMap<String, Sym>) -> Result<(), String> {
         for sym in scope.values() {
             if is_owning(&sym.ty) {
@@ -1267,41 +1493,43 @@ impl Gen {
             Stmt::Loop(l) => self.lower_count_loop(b, l, env, loops),
             Stmt::ForEach(fe) => self.lower_foreach(b, fe, env, loops),
             Stmt::Return(r) => {
-                match &r.value {
-                    Some(e) => {
-                        let v = self.lower_expr(b, e, env)?;
-                        match &v {
-                            CVal::Void => {
-                                b.ins().return_(&[]);
-                            }
-                            _ => {
-                                let val = cval_value(&v);
-                                b.ins().return_(&[val]);
-                            }
-                        }
-                    }
-                    None => {
-                        b.ins().return_(&[]);
-                    }
-                }
+                // The value is produced first: evaluating it may itself fail,
+                // and that failure belongs to the `চেষ্টা` block still open
+                // around it.
+                let ret = match &r.value {
+                    Some(e) => match self.lower_expr(b, e, env)? {
+                        CVal::Void => None,
+                        v => Some(cval_value(&v)),
+                    },
+                    None => None,
+                };
+                self.unwind_tries(b, 0);
+                match ret {
+                    Some(val) => b.ins().return_(&[val]),
+                    None => b.ins().return_(&[]),
+                };
                 Ok(true)
             }
             Stmt::Break(_) => {
                 let ctx = loops.last().ok_or("M2 codegen: break লুপের বাইরে ব্যবহার করা যায় না")?;
-                b.ins().jump(ctx.break_block, &[]);
+                let (target, depth) = (ctx.break_block, ctx.try_depth);
+                self.unwind_tries(b, depth);
+                b.ins().jump(target, &[]);
                 Ok(true)
             }
             Stmt::Continue(_) => {
                 let ctx = loops.last().ok_or("M2 codegen: continue লুপের বাইরে ব্যবহার করা যায় না")?;
-                b.ins().jump(ctx.continue_block, &[]);
+                let (target, depth) = (ctx.continue_block, ctx.try_depth);
+                self.unwind_tries(b, depth);
+                b.ins().jump(target, &[]);
                 Ok(true)
             }
+            Stmt::TryCatch(tc) => self.lower_try_catch(b, tc, env, loops),
             // `ডিসপ্লে { ... }` inside the app body: the widget tree is
             // (re)built by a separate generated `kl_build_ui` function, so
             // here it's a no-op — see `lower_display_body`/`generate_build_ui`.
             Stmt::Display(_) => Ok(false),
             Stmt::Widget(w) => self.lower_widget(b, w, env, loops).map(|_| false),
-            other => Err(format!("M4 codegen: এই statement এখনো সমর্থিত নয়: {:?}", other)),
         }
     }
 
@@ -1410,7 +1638,7 @@ impl Gen {
 
         b.switch_to_block(body_blk);
         b.seal_block(body_blk);
-        loops.push(LoopCtx { continue_block: header, break_block: merge });
+        loops.push(LoopCtx { continue_block: header, break_block: merge, try_depth: self.try_depth });
         let term = self.lower_stmts(b, &w.body.stmts, env, loops)?;
         loops.pop();
         if !term {
@@ -1442,7 +1670,7 @@ impl Gen {
 
         b.switch_to_block(body_blk);
         b.seal_block(body_blk);
-        loops.push(LoopCtx { continue_block: incr_blk, break_block: merge });
+        loops.push(LoopCtx { continue_block: incr_blk, break_block: merge, try_depth: self.try_depth });
         let term = self.lower_stmts(b, &l.body.stmts, env, loops)?;
         loops.pop();
         if !term {
@@ -1507,7 +1735,7 @@ impl Gen {
         b.def_var(loop_var, cval_value(&elem_cval));
         env.insert(fe.var.name.clone(), Sym { ty: elem_ty, var: loop_var });
 
-        loops.push(LoopCtx { continue_block: incr_blk, break_block: merge });
+        loops.push(LoopCtx { continue_block: incr_blk, break_block: merge, try_depth: self.try_depth });
         let term = self.lower_stmts(b, &fe.body.stmts, env, loops)?;
         loops.pop();
         let loopvar_scope = env.pop_scope();
@@ -1879,6 +2107,13 @@ pub fn emit_for(prog: &Program, target: crate::link::Target) -> Result<Vec<u8>, 
         ("kl_map_keys", &[ptr_ty], &[ptr_ty]),
         ("kl_map_decref", &[ptr_ty], &[]),
         ("kl_map_missing_key", &[], &[]),
+        // চেষ্টা / ধরো
+        ("kl_try_enter", &[], &[]),
+        ("kl_try_exit", &[], &[]),
+        ("kl_err_pending", &[], &[i64t]),
+        ("kl_err_take", &[], &[ptr_ty]),
+        ("kl_err_scratch", &[], &[ptr_ty]),
+        ("kl_fail_div_zero", &[], &[]),
         // UI engine (M4)
         ("kl_ui_begin", &[], &[]),
         ("kl_ui_text", &[ptr_ty], &[]),
@@ -1920,6 +2155,8 @@ pub fn emit_for(prog: &Program, target: crate::link::Target) -> Result<Vec<u8>, 
         structs: HashMap::new(),
         consts: HashMap::new(),
         str_counter: 0,
+        try_depth: 0,
+        try_handlers: Vec::new(),
         print_num,
         print_bool,
         print_text,
