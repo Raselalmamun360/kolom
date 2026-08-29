@@ -17,7 +17,8 @@ set -euo pipefail
 
 OUT="${1:-dist}"
 PROFILE="${2:-release}"
-TARGET="x86_64-pc-windows-gnu"
+WIN_TARGET="x86_64-pc-windows-gnu"
+LINUX_TARGET="x86_64-unknown-linux-musl"
 ROOT="$(cd "$(dirname "$0")/.." && pwd)"
 
 say() { printf '  %s\n' "$*"; }
@@ -51,15 +52,28 @@ cd "$ROOT"
 FLAG=""; [ "$PROFILE" = "release" ] && FLAG="--release"
 say "building kolom.exe ($PROFILE)"
 cargo build $FLAG -p kolom-cli >/dev/null
-say "building runtime for $TARGET ($PROFILE)"
-cargo build $FLAG -p kolom-runtime --target "$TARGET" >/dev/null
+say "building runtime for $WIN_TARGET ($PROFILE)"
+cargo build $FLAG -p kolom-runtime --target "$WIN_TARGET" >/dev/null
+# Linux cross-target is optional: only bundle it if the target is installed.
+LINUX_OK=0
+if rustup target list --installed 2>/dev/null | grep -q "^$LINUX_TARGET$"; then
+  say "building runtime for $LINUX_TARGET ($PROFILE)"
+  cargo build $FLAG -p kolom-runtime --target "$LINUX_TARGET" >/dev/null && LINUX_OK=1
+else
+  say "skipping Linux target (rustup target add $LINUX_TARGET to include it)"
+fi
 
 # --- assemble ---------------------------------------------------------------
 rm -rf "$OUT"
 mkdir -p "$OUT/sysroot/bin" "$OUT/sysroot/lib"
 cp "target/$PROFILE/kolom.exe" "$OUT/"
-cp "target/$TARGET/$PROFILE/libkolom_runtime.a" "$OUT/sysroot/"
 cp "$LLD" "$OUT/sysroot/bin/"
+
+# Windows runtime, both at the sysroot root (host layout) and under its
+# triple, so old and new lookup paths both resolve.
+cp "target/$WIN_TARGET/$PROFILE/libkolom_runtime.a" "$OUT/sysroot/"
+mkdir -p "$OUT/sysroot/$WIN_TARGET"
+cp "target/$WIN_TARGET/$PROFILE/libkolom_runtime.a" "$OUT/sysroot/$WIN_TARGET/"
 
 ML="$MINGW/x86_64-w64-mingw32/lib"
 GL="$(ls -d "$MINGW"/lib/gcc/x86_64-w64-mingw32/* 2>/dev/null | tail -1)"
@@ -81,6 +95,23 @@ for a in libkernel32.a libuser32.a libgdi32.a libadvapi32.a libshell32.a \
          libole32.a liboleaut32.a libmsimg32.a libcomdlg32.a; do
   [ -f "$ML/$a" ] && cp "$ML/$a" "$OUT/sysroot/lib/"
 done
+
+# --- Linux (musl) cross-compilation support ---------------------------------
+# musl's CRT objects and libc.a ship inside the Rust toolchain itself, so no
+# external musl installation is needed to bundle Linux support.
+if [ "$LINUX_OK" = "1" ]; then
+  SC="$(rustc --print sysroot)/lib/rustlib/$LINUX_TARGET/lib/self-contained"
+  if [ -d "$SC" ]; then
+    mkdir -p "$OUT/sysroot/$LINUX_TARGET/lib"
+    cp "target/$LINUX_TARGET/$PROFILE/libkolom_runtime.a" "$OUT/sysroot/$LINUX_TARGET/"
+    for f in crt1.o crti.o crtn.o libc.a libunwind.a; do
+      [ -f "$SC/$f" ] && cp "$SC/$f" "$OUT/sysroot/$LINUX_TARGET/lib/"
+    done
+    say "bundled Linux cross-compilation support"
+  else
+    say "warning: musl self-contained dir not found; Linux target not bundled"
+  fi
+fi
 
 # --- license notices --------------------------------------------------------
 # Apache-2.0 (rust-lld, Cranelift) and MinGW-w64's terms both require their

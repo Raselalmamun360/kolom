@@ -288,23 +288,23 @@ fn cmd_build(path: Option<&String>, target: Option<&String>, use_c_backend: bool
         eprintln!("ত্রুটি: বিল্ড ফোল্ডার তৈরি করা যায়নি");
         return ExitCode::FAILURE;
     }
-    let exe_path = build_dir.join(format!("{}{}", exe_name, if cfg!(windows) { ".exe" } else { "" }));
+    let mut exe_path = build_dir.join(format!("{}{}", exe_name, if cfg!(windows) { ".exe" } else { "" }));
 
     // Default path: Cranelift emits machine code directly and a bundled
     // linker produces the executable — no C compiler involved at any point.
     if !use_c_backend {
-        // The Cranelift backend emits for x86_64-pc-windows-gnu only. Refuse
-        // a cross-target request rather than silently producing a Windows
-        // binary for it.
-        if target != "windows" {
-            eprintln!(
-                "ত্রুটি: '{}' টার্গেট Cranelift ব্যাকএন্ডে এখনো সমর্থিত নয় (আপাতত শুধু windows)",
-                target
-            );
-            eprintln!("(C ব্যাকএন্ড দিয়ে চেষ্টা করতে: কলম বিল্ড --সি <ফাইল.ক> {})", target);
-            return ExitCode::FAILURE;
-        }
-        let obj_bytes = match kolom_codegen_cranelift::emit(&prog) {
+        let tgt = match kolom_codegen_cranelift::Target::from_name(target) {
+            Some(t) => t,
+            None => {
+                eprintln!(
+                    "ত্রুটি: '{}' টার্গেট Cranelift ব্যাকএন্ডে এখনো সমর্থিত নয় (windows, linux)",
+                    target
+                );
+                eprintln!("(C ব্যাকএন্ড দিয়ে চেষ্টা করতে: কলম বিল্ড --সি <ফাইল.ক> {})", target);
+                return ExitCode::FAILURE;
+            }
+        };
+        let obj_bytes = match kolom_codegen_cranelift::emit_for(&prog, tgt) {
             Ok(b) => b,
             Err(e) => {
                 eprintln!("ত্রুটি: {}", e);
@@ -317,7 +317,8 @@ fn cmd_build(path: Option<&String>, target: Option<&String>, use_c_backend: bool
             eprintln!("ত্রুটি: অবজেক্ট ফাইল লেখা যায়নি");
             return ExitCode::FAILURE;
         }
-        return match kolom_codegen_cranelift::link_executable(&obj_path, &exe_path) {
+        exe_path = build_dir.join(format!("{}{}", exe_name, tgt.exe_suffix()));
+        return match kolom_codegen_cranelift::link_executable_for(tgt, &obj_path, &exe_path) {
             Ok(()) => {
                 println!("{}", exe_path.display());
                 ExitCode::SUCCESS
@@ -419,9 +420,9 @@ fn cmd_new(name: Option<&String>) -> ExitCode {
 fn cmd_target() -> ExitCode {
     println!("কলম টার্গেট");
     println!();
-    println!("  windows   Windows x64 (ডিফল্ট, Win32/GDI UI)");
-    println!("  linux     Linux x64/ARM (কনসোল মোড)");
-    println!("  android   Android NDK (কনসোল মোড)");
+    println!("  windows   Windows x64 — Win32/GDI UI (ডিফল্ট)");
+    println!("  linux     Linux x64 — স্ট্যাটিক musl বাইনারি, কনসোল মোড");
+    println!("  android   Android NDK — শুধু `--সি` ব্যাকএন্ডে");
     println!();
     println!("ব্যবহার: kolom বিল্ড <ফাইল> <টার্গেট>");
     println!("উদাহরণ:");

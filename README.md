@@ -47,9 +47,10 @@ $ kolom চালাও অভিবাদন.ক
 ## দ্রুত শুরু
 
 ```console
-kolom নতুন আমার_প্রকল্প          # নতুন প্রকল্প
-kolom চালাও আমার_প্রকল্প/main.ক   # চালাও (ইন্টারপ্রিটেড)
-kolom বিল্ড আমার_প্রকল্প/main.ক    # নেটিভ .exe তৈরি করো
+kolom নতুন আমার_প্রকল্প                # নতুন প্রকল্প
+kolom চালাও আমার_প্রকল্প/main.ক         # চালাও (ইন্টারপ্রিটেড)
+kolom বিল্ড আমার_প্রকল্প/main.ক          # নেটিভ বাইনারি তৈরি করো
+kolom বিল্ড আমার_প্রকল্প/main.ক linux    # Linux-এর জন্য ক্রস-কম্পাইল
 ```
 
 ইনস্টল ও PATH সেট করার নির্দেশনা — [`docs/getting-started.md`](docs/getting-started.md)।
@@ -78,10 +79,11 @@ kolom বিল্ড আমার_প্রকল্প/main.ক    # নেট
 | | অবস্থা |
 |---|---|
 | ইন্টারপ্রেটার (`চালাও`) | ✅ |
-| নেটিভ কম্পাইলার (`বিল্ড`) | ✅ Windows x64 |
+| নেটিভ কম্পাইলার (`বিল্ড`) | ✅ Windows x64, Linux x64 (স্ট্যাটিক musl) |
 | স্ট্যান্ডার্ড লাইব্রেরি | ✅ ৮/৯ মডিউল (`নেটওয়ার্ক` শুধু `--সি` ব্যাকএন্ডে) |
 | নেটিভ UI ও গ্রাফিক্স | ✅ Windows |
-| Linux / macOS নেটিভ বিল্ড | ⏳ পরিকল্পিত (`--সি` ব্যাকএন্ডে আংশিক) |
+| Linux নেটিভ UI | ⏳ পরিকল্পিত (কনসোল মোড কাজ করে) |
+| macOS | ⏳ পরিকল্পিত |
 | IDE এক্সটেনশন | ⏳ পরিকল্পিত |
 
 ## কীভাবে কাজ করে
@@ -109,6 +111,7 @@ kolom বিল্ড আমার_প্রকল্প/main.ক    # নেট
 ```console
 git clone <repo> && cd Kolom
 rustup target add x86_64-pc-windows-gnu
+rustup target add x86_64-unknown-linux-musl   # ঐচ্ছিক: Linux ক্রস-কম্পাইল
 bash scripts/make-sysroot.sh dist release
 ```
 
@@ -164,12 +167,14 @@ language; it was designed for Bengali speakers from the start.
 - Also runs interpreted for fast iteration.
 
 **Status** — v0.1.0. Interpreter, native compiler, standard library, and UI
-all work on Windows x64. Linux/macOS native builds are planned.
+all work on Windows x64. Linux x64 is supported for console programs, and
+cross-compiles from Windows to a single static musl binary. macOS is planned.
 
 **Build from source**
 
 ```console
 rustup target add x86_64-pc-windows-gnu
+rustup target add x86_64-unknown-linux-musl   # optional: Linux cross-compilation
 bash scripts/make-sysroot.sh dist release
 ```
 

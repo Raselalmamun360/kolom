@@ -51,7 +51,51 @@
 use std::path::{Path, PathBuf};
 use std::process::Command;
 
-/// The target Kolom compiles for. See the module docs on why GNU, not MSVC.
+/// A platform Kolom can produce native executables for.
+///
+/// Both choices are driven by redistributability: MinGW-w64 on Windows
+/// (see module docs) and musl on Linux. musl is MIT-licensed and built for
+/// static linking, so a Kolom binary is one self-contained ELF that runs on
+/// any distribution, with no glibc version coupling and no LGPL question.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Target {
+    /// x86_64 Windows, MinGW-w64 ABI.
+    WindowsGnu,
+    /// x86_64 Linux, statically linked against musl.
+    LinuxMusl,
+}
+
+impl Target {
+    pub fn triple(self) -> &'static str {
+        match self {
+            Target::WindowsGnu => "x86_64-pc-windows-gnu",
+            Target::LinuxMusl => "x86_64-unknown-linux-musl",
+        }
+    }
+
+    /// Maps a `কলম বিল্ড <file> <target>` name to a target.
+    pub fn from_name(name: &str) -> Option<Target> {
+        match name {
+            "windows" => Some(Target::WindowsGnu),
+            "linux" => Some(Target::LinuxMusl),
+            _ => None,
+        }
+    }
+
+    /// The platform this build of kolom runs on, used when no target is given.
+    pub fn host() -> Target {
+        if cfg!(windows) { Target::WindowsGnu } else { Target::LinuxMusl }
+    }
+
+    pub fn exe_suffix(self) -> &'static str {
+        match self {
+            Target::WindowsGnu => ".exe",
+            Target::LinuxMusl => "",
+        }
+    }
+}
+
+/// Backwards-compatible alias for the default target's triple.
 pub const TARGET_TRIPLE: &str = "x86_64-pc-windows-gnu";
 
 /// What a link attempt needed but could not find, with a Bengali message
@@ -74,8 +118,9 @@ fn err<T>(msg: impl Into<String>) -> Result<T, LinkError> {
 /// Cranelift ISA builder for the Kolom target. Explicitly requests the GNU
 /// triple rather than the host's, so object files carry the ABI the linker
 /// below expects, regardless of which toolchain built `kolom` itself.
-pub fn isa_builder() -> Result<cranelift_codegen::isa::Builder, String> {
-    let triple: target_lexicon::Triple = TARGET_TRIPLE.parse().map_err(|e| format!("অবৈধ টার্গেট ট্রিপল: {:?}", e))?;
+pub fn isa_builder(target: Target) -> Result<cranelift_codegen::isa::Builder, String> {
+    let triple: target_lexicon::Triple =
+        target.triple().parse().map_err(|e| format!("অবৈধ টার্গেট ট্রিপল: {:?}", e))?;
     cranelift_codegen::isa::lookup(triple).map_err(|e| format!("Cranelift টার্গেট সমর্থন করে না: {}", e))
 }
 
@@ -114,26 +159,35 @@ pub fn sysroot() -> Option<PathBuf> {
 
 const RUNTIME_LIB_NAME: &str = "libkolom_runtime.a";
 
-/// Locates the Kolom runtime: sysroot first, then the cargo target
-/// directory for the GNU target (dev checkout).
-pub fn find_runtime_lib() -> Option<PathBuf> {
+/// Locates the Kolom runtime for `target`: sysroot first, then the cargo
+/// target directory (dev checkout).
+///
+/// A sysroot may hold runtimes for several targets, so each lives under its
+/// own triple directory; a bare `libkolom_runtime.a` at the sysroot root is
+/// still accepted for the host target, which is how single-target bundles
+/// produced before cross-compilation existed are laid out.
+pub fn find_runtime_lib(target: Target) -> Option<PathBuf> {
     if let Some(sr) = sysroot() {
-        let p = sr.join(RUNTIME_LIB_NAME);
-        if p.exists() {
-            return Some(p);
+        let per_target = sr.join(target.triple()).join(RUNTIME_LIB_NAME);
+        if per_target.exists() {
+            return Some(per_target);
+        }
+        if target == Target::host() {
+            let flat = sr.join(RUNTIME_LIB_NAME);
+            if flat.exists() {
+                return Some(flat);
+            }
         }
     }
     let exe = std::env::current_exe().ok()?;
-    // Walk up out of target/<profile>[/deps] and look under the GNU target
-    // directory, where `cargo build --target x86_64-pc-windows-gnu` puts it.
     let mut dir = exe.parent()?.to_path_buf();
     for _ in 0..4 {
         for profile in ["release", "debug"] {
-            let p = dir.join("target").join(TARGET_TRIPLE).join(profile).join(RUNTIME_LIB_NAME);
+            let p = dir.join("target").join(target.triple()).join(profile).join(RUNTIME_LIB_NAME);
             if p.exists() {
                 return Some(p);
             }
-            let p2 = dir.join(TARGET_TRIPLE).join(profile).join(RUNTIME_LIB_NAME);
+            let p2 = dir.join(target.triple()).join(profile).join(RUNTIME_LIB_NAME);
             if p2.exists() {
                 return Some(p2);
             }
@@ -143,7 +197,10 @@ pub fn find_runtime_lib() -> Option<PathBuf> {
     None
 }
 
+#[cfg(windows)]
 const RUST_LLD_NAME: &str = "rust-lld.exe";
+#[cfg(not(windows))]
+const RUST_LLD_NAME: &str = "rust-lld";
 
 /// Locates `rust-lld` — a single self-contained executable, so bundling it
 /// into a kolom sysroot is one file copy. (The `gcc-ld/ld.lld` alongside it
@@ -164,16 +221,44 @@ pub fn find_linker() -> Option<PathBuf> {
     glob(Path::new(&rust_sysroot), &["lib", "rustlib", "*", "bin", RUST_LLD_NAME]).pop()
 }
 
-/// Directories holding MinGW-w64's CRT startup objects and import
-/// libraries. Prefers a bundled `sysroot/lib`; otherwise falls back to an
-/// installed MinGW-w64 (so a dev checkout works without packaging first).
-pub fn find_lib_dirs() -> Vec<PathBuf> {
+/// Directories holding the target's CRT startup objects and libraries.
+///
+/// Windows: MinGW-w64. Linux: the musl libc that ships *inside the Rust
+/// toolchain* (`.../rustlib/<triple>/lib/self-contained/`), which is why
+/// Linux builds need nothing installed beyond Rust itself.
+pub fn find_lib_dirs(target: Target) -> Vec<PathBuf> {
     if let Some(sr) = sysroot() {
-        let p = sr.join("lib");
-        if p.is_dir() {
-            return vec![p];
+        let per_target = sr.join(target.triple()).join("lib");
+        if per_target.is_dir() {
+            return vec![per_target];
+        }
+        if target == Target::host() {
+            let flat = sr.join("lib");
+            if flat.is_dir() {
+                return vec![flat];
+            }
         }
     }
+    match target {
+        Target::LinuxMusl => rust_self_contained_dir(target).into_iter().collect(),
+        Target::WindowsGnu => find_mingw_lib_dirs(),
+    }
+}
+
+/// `<rustc sysroot>/lib/rustlib/<triple>/lib/self-contained` — where Rust
+/// keeps musl's `crt1.o`/`crti.o`/`crtn.o`/`libc.a`.
+pub fn rust_self_contained_dir(target: Target) -> Option<PathBuf> {
+    let out = Command::new("rustc").arg("--print").arg("sysroot").output().ok()?;
+    let root = String::from_utf8(out.stdout).ok()?.trim().to_string();
+    if root.is_empty() {
+        return None;
+    }
+    let p = Path::new(&root)
+        .join("lib").join("rustlib").join(target.triple()).join("lib").join("self-contained");
+    p.is_dir().then_some(p)
+}
+
+fn find_mingw_lib_dirs() -> Vec<PathBuf> {
     let mut dirs = Vec::new();
     let mut roots: Vec<PathBuf> = Vec::new();
     if let Ok(p) = std::env::var("MINGW64_ROOT") {
@@ -181,7 +266,6 @@ pub fn find_lib_dirs() -> Vec<PathBuf> {
             roots.push(PathBuf::from(p));
         }
     }
-    // A MinGW on PATH: <...>/mingw64/bin/gcc.exe -> <...>/mingw64
     if let Some(paths) = std::env::var_os("PATH") {
         for d in std::env::split_paths(&paths) {
             if d.join("gcc.exe").exists() {
@@ -198,7 +282,6 @@ pub fn find_lib_dirs() -> Vec<PathBuf> {
         let libdir = root.join("x86_64-w64-mingw32").join("lib");
         if libdir.is_dir() {
             dirs.push(libdir);
-            // libgcc lives under a version-stamped gcc directory.
             if let Some(g) = glob(&root.join("lib").join("gcc").join("x86_64-w64-mingw32"), &["*"]).pop() {
                 dirs.push(g);
             }
@@ -208,95 +291,109 @@ pub fn find_lib_dirs() -> Vec<PathBuf> {
     dirs
 }
 
-/// System libraries every Kolom program links against, in GNU link order.
-/// The UI/graphics engine needs gdi32/user32; the rest back Rust's `std`
-/// on Windows. `-lmingw32`/`-lmingwex`/`-lgcc` and the UCRT provide the C
-/// runtime the mingw CRT startup code expects.
-const SYSTEM_LIBS: &[&str] = &[
-    "-lmingw32",
-    "-lgcc",
-    "-lgcc_eh",
-    "-lmoldname",
-    "-lmingwex",
-    "-lucrt",
-    "-lkernel32",
-    "-luser32",
-    "-lgdi32",
-    "-ladvapi32",
-    "-lshell32",
-    "-luserenv",
-    "-lws2_32",
-    "-lbcrypt",
-    "-lntdll",
-    "-lsynchronization",
-    "-lole32",
-    "-loleaut32",
+/// Windows system libraries, in GNU link order. The UI engine needs
+/// gdi32/user32; the rest back Rust's `std`.
+const WINDOWS_LIBS: &[&str] = &[
+    "-lmingw32", "-lgcc", "-lgcc_eh", "-lmoldname", "-lmingwex", "-lucrt",
+    "-lkernel32", "-luser32", "-lgdi32", "-ladvapi32", "-lshell32",
+    "-luserenv", "-lws2_32", "-lbcrypt", "-lntdll", "-lsynchronization",
+    "-lole32", "-loleaut32",
 ];
 
-/// Links `obj_path` into `exe_path`. Returns the linker's own diagnostics
-/// on failure so build errors stay actionable.
-pub fn link_executable(obj_path: &Path, exe_path: &Path) -> Result<(), LinkError> {
+/// Links `obj_path` into `exe_path` for `target`.
+pub fn link_executable_for(target: Target, obj_path: &Path, exe_path: &Path) -> Result<(), LinkError> {
     let linker = match find_linker() {
         Some(l) => l,
         None => {
             return err(
-                "লিংকার পাওয়া যায়নি — kolom sysroot-এ 'bin/rust-lld.exe' রাখো, \
-                 অথবা Rust টুলচেইন ইনস্টল করো (KOLOM_SYSROOT দিয়ে পথ বদলানো যায়)",
+                "লিংকার পাওয়া যায়নি — kolom sysroot-এ 'bin/rust-lld' রাখো,                  অথবা Rust টুলচেইন ইনস্টল করো (KOLOM_SYSROOT দিয়ে পথ বদলানো যায়)",
             )
         }
     };
-    let runtime = match find_runtime_lib() {
+    let runtime = match find_runtime_lib(target) {
         Some(r) => r,
         None => {
             return err(format!(
-                "কলম রানটাইম ('{}') পাওয়া যায়নি — kolom sysroot-এ রাখো (KOLOM_SYSROOT দিয়ে পথ বদলানো যায়)",
-                RUNTIME_LIB_NAME
+                "'{}' টার্গেটের কলম রানটাইম পাওয়া যায়নি — বিল্ড করো:
+                     cargo build --release -p kolom-runtime --target {}",
+                target.triple(), target.triple()
             ))
         }
     };
-    let lib_dirs = find_lib_dirs();
+    let lib_dirs = find_lib_dirs(target);
     if lib_dirs.is_empty() {
-        return err(
-            "MinGW-w64 লাইব্রেরি পাওয়া যায়নি — kolom sysroot-এ 'lib/' ফোল্ডারে রাখো, \
-             অথবা MinGW-w64 ইনস্টল করো (MINGW64_ROOT দিয়ে পথ দেওয়া যায়)",
-        );
+        return err(match target {
+            Target::WindowsGnu => "MinGW-w64 লাইব্রেরি পাওয়া যায়নি — kolom sysroot-এ 'lib/' ফোল্ডারে রাখো, অথবা MinGW-w64 ইনস্টল করো (MINGW64_ROOT দিয়ে পথ দেওয়া যায়)".to_string(),
+            Target::LinuxMusl => format!(
+                "musl লাইব্রেরি পাওয়া যায়নি — যোগ করো:
+    rustup target add {}",
+                target.triple()
+            ),
+        });
     }
-    // mingw's CRT startup object; without it there is no entry point.
-    let crt2 = lib_dirs.iter().map(|d| d.join("crt2.o")).find(|p| p.exists());
-    let crt2 = match crt2 {
-        Some(p) => p,
-        None => return err("MinGW-এর 'crt2.o' পাওয়া যায়নি — sysroot/lib অসম্পূর্ণ"),
-    };
-    let crtbegin = lib_dirs.iter().map(|d| d.join("crtbegin.o")).find(|p| p.exists());
-    let crtend = lib_dirs.iter().map(|d| d.join("crtend.o")).find(|p| p.exists());
 
+    let find_obj = |name: &str| lib_dirs.iter().map(|d| d.join(name)).find(|p| p.exists());
     let mut cmd = Command::new(&linker);
-    cmd.arg("-flavor").arg("gnu");
-    cmd.arg("-o").arg(exe_path);
-    cmd.arg("-m").arg("i386pep"); // 64-bit PE
-    cmd.arg("--subsystem").arg("console");
+    cmd.arg("-flavor").arg("gnu").arg("-o").arg(exe_path);
     for d in &lib_dirs {
         cmd.arg(format!("-L{}", d.display()));
     }
-    cmd.arg(&crt2);
-    if let Some(p) = &crtbegin {
-        cmd.arg(p);
-    }
-    cmd.arg(obj_path).arg(&runtime);
-    for l in SYSTEM_LIBS {
-        cmd.arg(l);
-    }
-    if let Some(p) = &crtend {
-        cmd.arg(p);
+
+    match target {
+        Target::WindowsGnu => {
+            let crt2 = match find_obj("crt2.o") {
+                Some(p) => p,
+                None => return err("MinGW-এর 'crt2.o' পাওয়া যায়নি — sysroot/lib অসম্পূর্ণ"),
+            };
+            cmd.arg("-m").arg("i386pep").arg("--subsystem").arg("console");
+            cmd.arg(&crt2);
+            if let Some(p) = find_obj("crtbegin.o") {
+                cmd.arg(p);
+            }
+            cmd.arg(obj_path).arg(&runtime);
+            for l in WINDOWS_LIBS {
+                cmd.arg(l);
+            }
+            if let Some(p) = find_obj("crtend.o") {
+                cmd.arg(p);
+            }
+        }
+        Target::LinuxMusl => {
+            // Fully static: one ELF with no shared-library dependencies, so
+            // the binary runs on any distribution.
+            let crt1 = match find_obj("crt1.o") {
+                Some(p) => p,
+                None => return err("musl-এর 'crt1.o' পাওয়া যায়নি — sysroot/lib অসম্পূর্ণ"),
+            };
+            cmd.arg("-m").arg("elf_x86_64").arg("-static");
+            cmd.arg(&crt1);
+            if let Some(p) = find_obj("crti.o") {
+                cmd.arg(p);
+            }
+            cmd.arg(obj_path).arg(&runtime);
+            cmd.arg("-lc");
+            if let Some(p) = find_obj("libunwind.a") {
+                cmd.arg(p);
+            }
+            if let Some(p) = find_obj("crtn.o") {
+                cmd.arg(p);
+            }
+        }
     }
 
     match cmd.output() {
         Ok(out) if out.status.success() => Ok(()),
         Ok(out) => err(format!(
-            "লিংক ব্যর্থ (কোড {}):\n{}",
+            "লিংক ব্যর্থ (কোড {}):
+{}",
             out.status.code().unwrap_or(-1),
             String::from_utf8_lossy(&out.stderr).trim()
         )),
         Err(e) => err(format!("লিংকার '{}' চালানো যায়নি: {}", linker.display(), e)),
     }
+}
+
+/// Links for the host platform.
+pub fn link_executable(obj_path: &Path, exe_path: &Path) -> Result<(), LinkError> {
+    link_executable_for(Target::host(), obj_path, exe_path)
 }

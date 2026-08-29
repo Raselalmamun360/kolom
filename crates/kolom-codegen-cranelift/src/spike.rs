@@ -15,7 +15,7 @@ use std::path::Path;
 pub fn build_hello_object(out_path: &Path, text: &str) -> Result<(), Box<dyn Error>> {
     let mut flag_builder = settings::builder();
     flag_builder.set("is_pic", "false")?;
-    let isa_builder = crate::link::isa_builder()?;
+    let isa_builder = crate::link::isa_builder(crate::link::Target::host())?;
     let isa = isa_builder.finish(settings::Flags::new(flag_builder))?;
 
     let obj_builder =

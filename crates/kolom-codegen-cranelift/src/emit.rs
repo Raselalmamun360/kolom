@@ -1738,6 +1738,11 @@ fn declare_import(module: &mut ObjectModule, name: &str, params: &[ClifType], re
 /// validator first (mirroring what kolom-cli's `check_program` does before
 /// invoking the existing C backend) so this can be called standalone.
 pub fn emit(prog: &Program) -> Result<Vec<u8>, String> {
+    emit_for(prog, crate::link::Target::host())
+}
+
+/// As `emit`, but generating code for an explicit target.
+pub fn emit_for(prog: &Program, target: crate::link::Target) -> Result<Vec<u8>, String> {
     let diags = kolom_sema::analyze(prog);
     if !diags.is_empty() {
         let msgs: Vec<String> = diags.iter().map(|d| format!("{}:{}: {}", d.line, d.col, d.message)).collect();
@@ -1746,7 +1751,11 @@ pub fn emit(prog: &Program) -> Result<Vec<u8>, String> {
 
     let mut flag_builder = settings::builder();
     flag_builder.set("is_pic", "false").map_err(|e| e.to_string())?;
-    let isa_builder = crate::link::isa_builder()?;
+    // Cranelift defaults to `none`, which disables essentially all
+    // optimization — measured ~2x slower on compute-bound Kolom code.
+    // `কলম বিল্ড` produces release artifacts, so optimize by default.
+    flag_builder.set("opt_level", "speed").map_err(|e| e.to_string())?;
+    let isa_builder = crate::link::isa_builder(target)?;
     let isa = isa_builder.finish(settings::Flags::new(flag_builder)).map_err(|e| e.to_string())?;
     let obj_builder = ObjectBuilder::new(isa, "kolom_module", cranelift_module::default_libcall_names()).map_err(|e| e.to_string())?;
     let mut module = ObjectModule::new(obj_builder);
