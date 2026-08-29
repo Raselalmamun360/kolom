@@ -24,25 +24,13 @@ fn run_src(src: &str, base_dir: Option<&Path>) -> String {
         );
     }
 
+    // Uses the CLI's own module resolution rather than a private copy:
+    // an earlier duplicate here silently missed struct export and stdlib
+    // import propagation, so the harness disagreed with the real compiler.
     if let Some(dir) = base_dir {
-        for imp in &prog.imports.clone() {
-            if kolom_sema::STDLIB_MODULES.contains(&imp.name.as_str()) {
-                continue;
-            }
-            let mod_path = dir.join(format!("{}.ক", imp.name));
-            if let Ok(mod_src) = fs::read_to_string(&mod_path) {
-                let (mt, me) = kolom_lexer::lex(&mod_src);
-                if me.is_empty() {
-                    let (mp, pe) = kolom_syntax::parse(mt);
-                    if pe.is_empty() {
-                        prog.funcs.extend(mp.funcs);
-                        prog.consts.extend(mp.consts);
-                    }
-                }
-            }
+        if let Err(e) = kolom_cli::resolve_user_modules(&mut prog, dir) {
+            return blocks(vec![format!("ত্রুটি: {}", e)]);
         }
-        prog.imports
-            .retain(|i| kolom_sema::STDLIB_MODULES.contains(&i.name.as_str()));
     }
 
     let sema_errs = kolom_sema::analyze(&prog);
@@ -111,7 +99,12 @@ fn golden() {
             continue;
         }
         let expected = fs::read_to_string(&expected_path).unwrap();
-        if got != expected {
+        // Compare on normalized newlines. `.gitattributes` pins these files
+        // to LF, but a clone made before that landed — or with a local
+        // core.autocrlf — still yields CRLF, and the resulting failure
+        // ("expected 5, got 5") gives no hint of the real cause.
+        let norm = |t: &str| t.replace("\r\n", "\n");
+        if norm(&got) != norm(&expected) {
             failures.push(format!(
                 "=== {}\n--- expected ---\n{}--- got ---\n{}",
                 dir.display(),
