@@ -180,9 +180,30 @@ fn resolve_user_modules(
             ));
         }
         for imp in &sub_prog.imports {
-            if !kolom_sema::STDLIB_MODULES.contains(&imp.name.as_str()) {
+            if kolom_sema::STDLIB_MODULES.contains(&imp.name.as_str()) {
+                // A module's own stdlib imports must reach the merged
+                // program: its function bodies are about to live there, and
+                // sema checks `গণিত.বর্গমূল` against the *merged* import
+                // list. Dropping them made a module unable to use the
+                // standard library at all.
+                if !prog.imports.iter().any(|e| e.name == imp.name) {
+                    prog.imports.push(imp.clone());
+                }
+            } else {
                 queue.push(imp.name.clone());
             }
+        }
+        // `ডাটা` declarations are exported like functions and constants.
+        // Without this a module could define a struct but nobody could name
+        // its type, so `ফাংশন বানাও() -> বিন্দু` failed to resolve.
+        for sd in sub_prog.structs.drain(..) {
+            if let Some(existing) = prog.structs.iter().find(|e| e.name.name == sd.name.name) {
+                return Err(format!(
+                    "'{}' ডাটা দুইবার ঘোষিত — একবার মডিউল '{}'-এ, আরেকবার {}:{}-এ",
+                    sd.name.name, mod_name, existing.name.pos.line, existing.name.pos.col
+                ));
+            }
+            prog.structs.push(sd);
         }
         prog.funcs.extend(sub_prog.funcs.drain(..));
         prog.consts.extend(sub_prog.consts.drain(..));
