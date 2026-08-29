@@ -490,6 +490,18 @@ impl<'o> Interp<'o> {
                     _ => None,
                 };
                 let mut val: Option<Value> = None;
+                // `a.b` is a module item only when `a` is not a local struct
+                // variable; otherwise it is a field read that further
+                // suffixes chain onto (`ব.ভি.মান`). Evaluate it as a value
+                // and clear the callable name so the loop treats it as one.
+                if let ExprKind::Qualified { module, name: fname } = &base.kind {
+                    if let Some(Value::Map(m)) = self.lookup(&module.name) {
+                        if let Some(v) = m.borrow().get(&fname.name) {
+                            val = Some(v.clone());
+                            name = None;
+                        }
+                    }
+                }
                 for s in sfx {
                     match s {
                         Suffix::Call(args, cpos) => {

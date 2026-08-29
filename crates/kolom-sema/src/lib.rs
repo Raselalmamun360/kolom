@@ -203,6 +203,9 @@ struct Ck {
     types: Types,
     imports: std::collections::HashSet<String>,
     structs: HashMap<String, Vec<(String, Ty)>>,
+    /// Names of all declared `ডাটা` types, collected before any field type
+    /// is resolved so a struct may reference one declared later in the file.
+    struct_names: std::collections::HashSet<String>,
 }
 
 pub fn analyze(prog: &Program) -> Vec<Diagnostic> {
@@ -218,6 +221,7 @@ pub fn analyze_typed(prog: &Program) -> (Vec<Diagnostic>, Types) {
         types: Types::default(),
         imports: std::collections::HashSet::new(),
         structs: HashMap::new(),
+        struct_names: std::collections::HashSet::new(),
     };
     ck.check_program(prog);
     let types = std::mem::take(&mut ck.types);
@@ -251,6 +255,64 @@ impl Ck {
         None
     }
 
+    /// If `var` is a local binding of struct type with a field `field`,
+    /// returns that field's type. Used to tell `struct_var.field` apart from
+    /// `module.item`, which are syntactically identical.
+    fn local_struct_field(&self, var: &str, field: &str) -> Option<Ty> {
+        let b = self.lookup(var)?;
+        let Ty::Struct(sname) = &b.ty else { return None };
+        let fields = self.structs.get(sname)?;
+        fields.iter().find(|(n, _)| n == field).map(|(_, t)| t.clone())
+    }
+
+    /// Rejects structs that contain themselves *by value*, directly or
+    /// through a chain of struct fields — such a type would need infinite
+    /// space. Reaching itself through a `শেয়ার`, array, or map field is
+    /// fine: those are pointers, which is exactly how recursive data
+    /// structures (lists, trees, ASTs) are built.
+    fn check_struct_cycles(&mut self, prog: &Program) {
+        for decl in &prog.structs {
+            let start = &decl.name.name;
+            let mut seen = std::collections::HashSet::new();
+            if let Some(path) = self.value_cycle_from(start, start, &mut seen) {
+                self.err(
+                    decl.name.pos,
+                    format!(
+                        "'{}' নিজেকেই ধারণ করছে ({}) — অসীম আকার।                          পুনরাবৃত্ত গঠনের জন্য 'শেয়ার {}' বা '{}[]' ব্যবহার করুন",
+                        start, path, start, start
+                    ),
+                );
+            }
+        }
+    }
+
+    /// Depth-first search for a by-value path from `current` back to `start`.
+    /// Returns the field path that closes the cycle, for the error message.
+    fn value_cycle_from(
+        &self,
+        start: &str,
+        current: &str,
+        seen: &mut std::collections::HashSet<String>,
+    ) -> Option<String> {
+        if !seen.insert(current.to_string()) {
+            return None;
+        }
+        let fields = self.structs.get(current)?.clone();
+        for (fname, fty) in fields {
+            // Only Struct fields are stored inline; Shared/Arr/Map are
+            // pointers and therefore break the size recursion.
+            if let Ty::Struct(next) = fty {
+                if next == start {
+                    return Some(format!("{}.{}", current, fname));
+                }
+                if let Some(rest) = self.value_cycle_from(start, &next, seen) {
+                    return Some(format!("{}.{} -> {}", current, fname, rest));
+                }
+            }
+        }
+        None
+    }
+
     fn resolve_type(&mut self, te: &TypeExpr) -> Ty {
         match te {
             TypeExpr::Named(id) => match id.name.as_str() {
@@ -261,11 +323,15 @@ impl Ck {
                 "অক্ষর" => Ty::Ch,
                 "ফাঁকা" => Ty::Null,
                 other => {
-                    self.err(
-                        id.pos,
-                        format!("'{}' অজানা টাইপ — প্রিমিটিভ টাইপ ব্যবহার করুন", other),
-                    );
-                    Ty::Err
+                    if self.struct_names.contains(other) {
+                        Ty::Struct(other.to_string())
+                    } else {
+                        self.err(
+                            id.pos,
+                            format!("'{}' অজানা টাইপ — প্রিমিটিভ টাইপ বা ঘোষিত 'ডাটা' ব্যবহার করুন", other),
+                        );
+                        Ty::Err
+                    }
                 }
             },
             TypeExpr::Array(inner) => Ty::Arr(Box::new(self.resolve_type(inner))),
@@ -294,6 +360,13 @@ impl Ck {
                 }
             }
         }
+        // Pass 1: every `ডাটা` name, so field types below may refer to a
+        // struct declared later in the file (and to itself, through a
+        // pointer-like `শেয়ার`/array field).
+        for s in &prog.structs {
+            self.struct_names.insert(s.name.name.clone());
+        }
+        // Pass 2: resolve field types now that all names are known.
         for s in &prog.structs {
             let fields: Vec<(String, Ty)> = s
                 .fields
@@ -307,6 +380,7 @@ impl Ck {
                 );
             }
         }
+        self.check_struct_cycles(prog);
         for f in &prog.funcs {
             let sig = FnSig {
                 params: f.params.iter().map(|p| self.resolve_type(&p.ty)).collect(),
@@ -1081,16 +1155,23 @@ impl Ck {
                 let mut callable: Option<String> = match &base.kind {
                     ExprKind::Ident(id) => Some(id.name.clone()),
                     ExprKind::Qualified { module, name } => {
-                        if !self.imports.contains(&module.name) {
-                            self.err(
-                                module.pos,
-                                format!(
-                                    "মডিউল '{}' ইম্পোর্ট করা হয়নি — 'ইম্পোর্ট {}' দিন",
-                                    module.name, module.name
-                                ),
-                            );
+                        // `a.b` is a module item only when `a` is not a local
+                        // struct variable; otherwise it is a field read that
+                        // more suffixes may chain onto (`ব.ভি.মান`).
+                        if self.local_struct_field(&module.name, &name.name).is_some() {
+                            None
+                        } else {
+                            if !self.imports.contains(&module.name) {
+                                self.err(
+                                    module.pos,
+                                    format!(
+                                        "মডিউল '{}' ইম্পোর্ট করা হয়নি — 'ইম্পোর্ট {}' দিন",
+                                        module.name, module.name
+                                    ),
+                                );
+                            }
+                            Some(format!("{}::{}", module.name, name.name))
                         }
-                        Some(format!("{}::{}", module.name, name.name))
                     }
                     _ => None,
                 };
