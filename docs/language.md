@@ -517,7 +517,7 @@ UI
 | `র‍্যান্ডম` | `বীজ(n)`, `সংখ্যা() -> সংখ্যা`, `মধ্যে(lo, hi) -> সংখ্যা` (অন্তর্ভুক্ত), `দশমিক() -> [০,১)` |
 | `ফাইলসিস্টেম` | `ফাইল_আছে(path)`, `ডিরেক্টরি_আছে(path)`, `ডিরেক্টরি_বানাও(path)` (recursive), `মুছো(path)`, `তালিকা(dir) -> লেখা[]`, `কপি(from, to)`, `সরাও(from, to)` |
 | `জেসন` | `বৈধকি(text) -> সত্যতা`, `বের_হও(s) -> লেখা` (quoted+escaped), `লেখা_বের_করো(text, key) -> লেখা`, `সংখ্যা_বের_করো(text, key) -> সংখ্যা` (top-level fields; full DOM awaits map types) |
-| `নেটওয়ার্ক` | TCP client: `যোগ(host, port) -> সংখ্যা` (handle), `পাঠাও(handle, text)`, `নাও(handle, maxBytes) -> লেখা`, `বন্ধ(handle)` |
+| `নেটওয়ার্ক` | TCP client: `কানেক্ট(host, port) -> সংখ্যা` (handle), `সেন্ড(handle, text)`, `রিসিভ(handle, maxBytes) -> লেখা`, `ক্লোজ(handle)` |
 | `গ্রাফিক্স` | Canvas: `রঙ(r,g,b)`, `বিন্দু(x,y)`, `রেখা(x1,y1,x2,y2)`, `আয়ত(x,y,w,h)`, `ভরাট_আয়ত(x,y,w,h)`, `বৃত্ত(cx,cy,r)`, `ভরাট_বৃত্ত(cx,cy,r)`, `লেখা(x,y,text)`, `ফন্ট(name,size)`, `টিক(ms, handler_fn)` — animation timer |
 
 ফাইল/নেটওয়ার্ক I/O ত্রুটিতে রানটাইম ত্রুটি ছুঁড়ে দেয়; `র‍্যান্ডম` LCG-ভিত্তিল — seed দিলে interp ও নেটিভ উভয়ে একই ক্রম দেয়।

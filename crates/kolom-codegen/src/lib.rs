@@ -1632,14 +1632,14 @@ impl Gen {
             ("নেটওয়ার্ক", _) => {
                 self.ensure_net_runtime();
                 *ret_out = match item {
-                    "যোগ" => Ty::Num,
-                    "নাও" => Ty::Txt,
+                    "কানেক্ট" => Ty::Num,
+                    "রিসিভ" => Ty::Txt,
                     _ => Ty::Null,
                 };
                 let fname = match item {
-                    "যোগ" => "kl_net_connect",
-                    "পাঠাও" => "kl_net_send",
-                    "নাও" => "kl_net_recv",
+                    "কানেক্ট" => "kl_net_connect",
+                    "সেন্ড" => "kl_net_send",
+                    "রিসিভ" => "kl_net_recv",
                     _ => "kl_net_close",
                 };
                 let joined: Vec<String> = vals.iter().map(|(_, v)| v.clone()).collect();

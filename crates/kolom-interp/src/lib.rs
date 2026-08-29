@@ -1009,7 +1009,7 @@ impl<'o> Interp<'o> {
             }
 
             // নেটওয়ার্ক
-            ("নেটওয়ার্ক", "যোগ", [Value::Txt(host), Value::Num(port)]) => {
+            ("নেটওয়ার্ক", "কানেক্ট", [Value::Txt(host), Value::Num(port)]) => {
                 use std::net::TcpStream;
                 match TcpStream::connect((host.as_str(), *port as u16)) {
                     Ok(stream) => {
@@ -1020,7 +1020,7 @@ impl<'o> Interp<'o> {
                     Err(e) => Err(err(pos, format!("সংযোগ ব্যর্থ '{}:{}': {}", host, port, e))),
                 }
             }
-            ("নেটওয়ার্ক", "পাঠাও", [Value::Num(h), Value::Txt(data)]) => {
+            ("নেটওয়ার্ক", "সেন্ড", [Value::Num(h), Value::Txt(data)]) => {
                 use std::io::Write as _;
                 match self.net.get_mut(&((*h) as u32)) {
                     Some(s) => s.write_all(data.as_bytes()).map_err(|e| {
@@ -1030,7 +1030,7 @@ impl<'o> Interp<'o> {
                 }
                 Ok(Value::Null)
             }
-            ("নেটওয়ার্ক", "নাও", [Value::Num(h), Value::Num(max)]) => {
+            ("নেটওয়ার্ক", "রিসিভ", [Value::Num(h), Value::Num(max)]) => {
                 use std::io::Read as _;
                 let handle = (*h) as u32;
                 match self.net.get_mut(&handle) {
@@ -1042,7 +1042,7 @@ impl<'o> Interp<'o> {
                     None => Err(err(pos, format!("অবৈধ সংযোগ #{}", h))),
                 }
             }
-            ("নেটওয়ার্ক", "বন্ধ", [Value::Num(h)]) => {
+            ("নেটওয়ার্ক", "ক্লোজ", [Value::Num(h)]) => {
                 self.net.remove(&((*h) as u32));
                 Ok(Value::Null)
             }

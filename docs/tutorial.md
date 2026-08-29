@@ -486,17 +486,17 @@ x /= ৪              // x = 6
 
 অ্যাপ {
     // Connect to server
-    ধরি sock = নেটওয়ার্ক.যোগ("example.com", 80)
+    ধরি sock = নেটওয়ার্ক.কানেক্ট("example.com", 80)
 
     // Send data
-    নেটওয়ার্ক.পাঠাও(sock, "GET / HTTP/1.0\r\n\r\n")
+    নেটওয়ার্ক.সেন্ড(sock, "GET / HTTP/1.0\r\n\r\n")
 
     // Receive response (max 4096 bytes)
-    ধরি response = নেটওয়ার্ক.নাও(sock, 4096)
+    ধরি response = নেটওয়ার্ক.রিসিভ(sock, 4096)
     লেখো(response)
 
     // Close connection
-    নেটওয়ার্ক.বন্ধ(sock)
+    নেটওয়ার্ক.ক্লোজ(sock)
 }
 ```
 

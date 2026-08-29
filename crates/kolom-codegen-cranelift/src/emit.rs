@@ -1162,8 +1162,32 @@ impl Gen {
                 Ok(CVal::Void)
             }
 
+            // নেটওয়ার্ক — TCP client. Sockets live in a registry inside
+            // kolom-runtime; Kolom sees only integer handles.
+            ("নেটওয়ার্ক", "কানেক্ট") => {
+                let host = self.lower_expr_txt(b, &args[0], env)?;
+                let port = self.lower_expr_num(b, &args[1], env)?;
+                Ok(CVal::Num(self.call_rt(b, "kl_net_connect", &[host, port])))
+            }
+            ("নেটওয়ার্ক", "সেন্ড") => {
+                let h = self.lower_expr_num(b, &args[0], env)?;
+                let data = self.lower_expr_txt(b, &args[1], env)?;
+                self.call_rt_void(b, "kl_net_send", &[h, data]);
+                Ok(CVal::Void)
+            }
+            ("নেটওয়ার্ক", "রিসিভ") => {
+                let h = self.lower_expr_num(b, &args[0], env)?;
+                let max = self.lower_expr_num(b, &args[1], env)?;
+                Ok(CVal::Txt(self.call_rt(b, "kl_net_recv", &[h, max])))
+            }
+            ("নেটওয়ার্ক", "ক্লোজ") => {
+                let h = self.lower_expr_num(b, &args[0], env)?;
+                self.call_rt_void(b, "kl_net_close", &[h]);
+                Ok(CVal::Void)
+            }
+
             _ => Err(format!(
-                "M4 codegen: '{}.{}' এখনো সমর্থিত নয় (নেটওয়ার্ক মডিউল পরবর্তী মাইলস্টোনে)",
+                "M4 codegen: '{}.{}' এখনো সমর্থিত নয় (গ্রাফিক্স UI ইঞ্জিনের অংশ)",
                 module, item
             )),
         }
@@ -1841,6 +1865,11 @@ pub fn emit_for(prog: &Program, target: crate::link::Target) -> Result<Vec<u8>, 
         ("kl_json_get_str", &[ptr_ty, ptr_ty], &[ptr_ty]),
         ("kl_json_get_num", &[ptr_ty, ptr_ty], &[i64t]),
         ("kl_json_escape", &[ptr_ty], &[ptr_ty]),
+        // নেটওয়ার্ক
+        ("kl_net_connect", &[ptr_ty, i64t], &[i64t]),
+        ("kl_net_send", &[i64t, ptr_ty], &[]),
+        ("kl_net_recv", &[i64t, i64t], &[ptr_ty]),
+        ("kl_net_close", &[i64t], &[]),
         // ম্যাপ
         ("kl_map_new", &[i64t], &[ptr_ty]),
         ("kl_map_len", &[ptr_ty], &[i64t]),

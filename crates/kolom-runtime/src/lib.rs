@@ -1,7 +1,7 @@
 pub mod ui;
 
 use std::alloc::{alloc, dealloc, Layout};
-use std::io::Write;
+use std::io::{Read, Write};
 
 fn write_line(bytes: &[u8]) {
     let mut stdout = std::io::stdout();
@@ -1070,5 +1070,93 @@ pub extern "C" fn kl_map_decref(p: *mut u8) {
             let cap = map_cap(p);
             dealloc(p, Layout::from_size_align(MAP_HEADER + (cap as usize) * MAP_ENTRY, 8).unwrap());
         }
+    }
+}
+
+// ============================================================================
+// নেটওয়ার্ক (network) — TCP client
+//
+// Kolom passes sockets around as plain `সংখ্যা` handles, so the runtime keeps
+// the real `TcpStream`s in a registry and hands out small integer indices.
+// A `Mutex` rather than the `static mut` used by the UI engine: that engine
+// is confined to one message-loop thread by construction, whereas nothing
+// stops network calls from several threads once Kolom grows them.
+// ============================================================================
+
+use std::collections::HashMap as StdHashMap;
+use std::net::TcpStream;
+use std::sync::Mutex;
+use std::sync::OnceLock;
+
+struct NetTable {
+    streams: StdHashMap<i64, TcpStream>,
+    next: i64,
+}
+
+fn net_table() -> &'static Mutex<NetTable> {
+    static T: OnceLock<Mutex<NetTable>> = OnceLock::new();
+    T.get_or_init(|| Mutex::new(NetTable { streams: StdHashMap::new(), next: 1 }))
+}
+
+fn net_fail(what: &str, detail: &str) -> ! {
+    eprintln!("ত্রুটি: {} — {}", what, detail);
+    std::process::exit(1);
+}
+
+/// `নেটওয়ার্ক.কানেক্ট(host, port)` — opens a TCP connection, returns its handle.
+#[no_mangle]
+pub extern "C" fn kl_net_connect(host: *mut u8, port: i64) -> i64 {
+    let h = String::from_utf8_lossy(unsafe { str_slice(host) }).into_owned();
+    match TcpStream::connect((h.as_str(), port as u16)) {
+        Ok(stream) => {
+            let mut t = net_table().lock().unwrap();
+            let handle = t.next;
+            t.next += 1;
+            t.streams.insert(handle, stream);
+            handle
+        }
+        Err(e) => net_fail(&format!("সংযোগ ব্যর্থ '{}:{}'", h, port), &e.to_string()),
+    }
+}
+
+/// `নেটওয়ার্ক.সেন্ড(handle, text)` — sends the whole string.
+#[no_mangle]
+pub extern "C" fn kl_net_send(handle: i64, data: *mut u8) {
+    let bytes = unsafe { str_slice(data) };
+    let mut t = net_table().lock().unwrap();
+    match t.streams.get_mut(&handle) {
+        Some(s) => {
+            if let Err(e) = s.write_all(bytes) {
+                net_fail("পাঠাতে ব্যর্থ", &e.to_string());
+            }
+        }
+        None => net_fail("অবৈধ সংযোগ", &format!("#{}", handle)),
+    }
+}
+
+/// `নেটওয়ার্ক.রিসিভ(handle, maxBytes)` — reads up to `max` bytes.
+/// Returns what arrived, which may be shorter, and is empty at end of stream.
+#[no_mangle]
+pub extern "C" fn kl_net_recv(handle: i64, max: i64) -> *mut u8 {
+    let cap = max.clamp(1, 1 << 20) as usize;
+    let mut buf = vec![0u8; cap];
+    let mut t = net_table().lock().unwrap();
+    match t.streams.get_mut(&handle) {
+        Some(s) => match s.read(&mut buf) {
+            Ok(n) => kl_str_new(buf.as_ptr(), n as i64),
+            Err(e) => net_fail("পড়তে ব্যর্থ", &e.to_string()),
+        },
+        None => net_fail("অবৈধ সংযোগ", &format!("#{}", handle)),
+    }
+}
+
+/// `নেটওয়ার্ক.ক্লোজ(handle)` — closes the connection. Closing an unknown or
+/// already-closed handle is a no-op rather than an error, so cleanup paths
+/// stay simple.
+#[no_mangle]
+pub extern "C" fn kl_net_close(handle: i64) {
+    let mut t = net_table().lock().unwrap();
+    if let Some(s) = t.streams.remove(&handle) {
+        let _ = s.shutdown(std::net::Shutdown::Both);
     }
 }
