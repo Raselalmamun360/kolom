@@ -301,6 +301,7 @@ dependencies = [
  "cranelift-module",
  "cranelift-native",
  "cranelift-object",
+ "kolom-cli",
  "kolom-lexer",
  "kolom-sema",
  "kolom-syntax",

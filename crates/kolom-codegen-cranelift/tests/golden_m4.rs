@@ -53,6 +53,40 @@ fn ui_dynamic_counter_rebuild() {
     assert_eq!(out, "বাড়ল\nবাড়ল\nকমল\n");
 }
 
+/// `মান`/`বসাও` on a `শেয়ার` cell — the interior-mutability accessors every
+/// UI example's state relies on (engine.md §৭). Handlers print the value
+/// `মান` reads back after each click, so this proves state genuinely
+/// persists across rebuilds through the runtime's payload pointer rather
+/// than, say, reading a stale copy each time.
+#[test]
+fn ui_shared_cell_get_set() {
+    let src = r#"
+ধ্রুবক গণনা: শেয়ার সংখ্যা = শেয়ার_করো(০)
+
+ফাংশন বাড়াও() -> ফাঁকা {
+    বসাও(গণনা, মান(গণনা) + ১)
+    লেখো(লেখায়(মান(গণনা)))
+}
+
+অ্যাপ গণক {
+    ডিসপ্লে {
+        টেক্সট("গণনা: " + লেখায়(মান(গণনা)))
+        বাটন("+", বাড়াও)
+    }
+}
+"#;
+    let out = run_with(
+        "ui_shared_cell",
+        src,
+        &[("KLOM_UI_AUTOCLOSE_MS", "1200"), ("KLOM_UI_SCRIPT_CLICKS", "0,0,0")],
+        None,
+    );
+    assert_eq!(out, "1
+2
+3
+", "মান/বসাও should thread state through three clicks: {out:?}");
+}
+
 /// Canvas + গ্রাফিক্স draw commands + টিক timer callback.
 #[test]
 fn ui_graphics_canvas_tick() {

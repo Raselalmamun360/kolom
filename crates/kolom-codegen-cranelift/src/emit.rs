@@ -26,7 +26,7 @@ use cranelift_codegen::ir::{types, AbiParam, BlockArg, InstBuilder, Signature, S
 use cranelift_codegen::ir::MemFlagsData;
 use cranelift_codegen::settings::{self, Configurable};
 use cranelift_frontend::{FunctionBuilder, FunctionBuilderContext, Variable};
-use cranelift_module::{DataDescription, FuncId, Linkage, Module};
+use cranelift_module::{DataDescription, DataId, FuncId, Linkage, Module};
 use cranelift_object::{ObjectBuilder, ObjectModule};
 use std::collections::HashMap;
 
@@ -198,7 +198,21 @@ pub struct Gen {
     /// immutable, so rather than allocating globals these are re-lowered
     /// inline wherever the name is referenced — which also makes them
     /// visible inside function bodies without threading a global scope.
+    ///
+    /// This is wrong for a `শেয়ার T` constant, whose entire point is that
+    /// every reference names the SAME mutable cell — re-lowering
+    /// `শেয়ার_করো(...)` would allocate a fresh one each time. Those are kept
+    /// out of this map and handled by `shared_consts` below instead.
     consts: HashMap<String, Expr>,
+    /// `শেয়ার T` top-level constants: name -> (global data slot holding the
+    /// cell pointer, the inner type `T`, the initializer). The slot is
+    /// written once, in `lower_main`'s prologue; every reference loads the
+    /// same pointer from it rather than re-running the initializer.
+    shared_consts: HashMap<String, (DataId, Ty, Expr)>,
+    /// `shared_consts`' keys, in declaration order — a `HashMap` doesn't
+    /// iterate deterministically, and the prologue should initialize these
+    /// in the order they were declared.
+    shared_const_order: Vec<String>,
     str_counter: u32,
 
     print_num: FuncId,
@@ -468,6 +482,18 @@ impl Gen {
                 _ => num_binop(b, op, a, c),
             },
             (CVal::Dec(a), CVal::Dec(c)) => dec_binop(b, op, a, c),
+            // সংখ্যা/দশমিক mixed arithmetic promotes to দশমিক, matching
+            // sema's `arith_num` (`language.md` §৬) — sema already accepts
+            // these programs, so codegen has to actually handle them rather
+            // than falling through to the "types don't match" error below.
+            (CVal::Num(a), CVal::Dec(c)) => {
+                let af = b.ins().fcvt_from_sint(types::F64, a);
+                dec_binop(b, op, af, c)
+            }
+            (CVal::Dec(a), CVal::Num(c)) => {
+                let cf = b.ins().fcvt_from_sint(types::F64, c);
+                dec_binop(b, op, a, cf)
+            }
             (CVal::Bool(a), CVal::Bool(c)) => bool_binop(b, op, a, c),
             (CVal::Txt(a), CVal::Txt(c)) => match op {
                 BinOp::Add => Ok(CVal::Txt(self.call_rt(b, "kl_str_concat", &[a, c]))),
@@ -637,6 +663,56 @@ impl Gen {
         Ok(CVal::Shared(box_ptr, Box::new(inner_ty)))
     }
 
+    /// `মান(cell)` — reads a `শেয়ার T` cell's current payload.
+    ///
+    /// Owning payload types are incref'd on the way out: the cell keeps its
+    /// own reference, and the caller now holds an independent one, exactly
+    /// as reading a struct field or array element does elsewhere in this
+    /// backend.
+    fn lower_shared_get(&mut self, b: &mut FunctionBuilder, args: &[Expr], env: &mut Env) -> Result<CVal, String> {
+        if args.len() != 1 {
+            return Err(format!("M2 codegen: 'মান' ১টি আর্গুমেন্ট নেয়, {}টি পেয়েছে", args.len()));
+        }
+        let cell = self.lower_expr(b, &args[0], env)?;
+        let CVal::Shared(box_ptr, inner_ty) = cell else {
+            return Err("M2 codegen: 'মান' 'শেয়ার' মান নেয়".into());
+        };
+        let pf = self.module.declare_func_in_func(self.shared_payload_ptr, b.func);
+        let call = b.ins().call(pf, &[box_ptr]);
+        let payload_addr = b.inst_results(call)[0];
+        let v = self.load_cval(b, &inner_ty, payload_addr, 0);
+        if is_owning(&inner_ty) {
+            self.emit_incref(b, cval_value(&v));
+        }
+        Ok(v)
+    }
+
+    /// `বসাও(cell, v)` — overwrites a `শেয়ার T` cell's payload with `v`.
+    ///
+    /// The old payload is decref'd before being overwritten, and `v` is
+    /// incref'd only when it names an existing binding (`lower_expr_for_binding`,
+    /// the same rule `ধরি x = y` uses) — a freshly-constructed value moves in
+    /// at its already-correct refcount of one.
+    fn lower_shared_set(&mut self, b: &mut FunctionBuilder, args: &[Expr], env: &mut Env) -> Result<CVal, String> {
+        if args.len() != 2 {
+            return Err(format!("M2 codegen: 'বসাও' ২টি আর্গুমেন্ট নেয়, {}টি পেয়েছে", args.len()));
+        }
+        let cell = self.lower_expr(b, &args[0], env)?;
+        let CVal::Shared(box_ptr, inner_ty) = cell else {
+            return Err("M2 codegen: 'বসাও'-এর প্রথম আর্গুমেন্ট 'শেয়ার' হতে হবে".into());
+        };
+        let new_v = self.lower_expr_for_binding(b, &args[1], env)?;
+        let pf = self.module.declare_func_in_func(self.shared_payload_ptr, b.func);
+        let call = b.ins().call(pf, &[box_ptr]);
+        let payload_addr = b.inst_results(call)[0];
+        if is_owning(&inner_ty) {
+            let old = self.load_cval(b, &inner_ty, payload_addr, 0);
+            self.emit_decref(b, &inner_ty, cval_value(&old))?;
+        }
+        self.store_cval(b, &new_v, payload_addr, 0);
+        Ok(CVal::Void)
+    }
+
     fn lower_struct_new(&mut self, b: &mut FunctionBuilder, name: &str, args: &[Expr], env: &mut Env) -> Result<CVal, String> {
         let layout = self.structs.get(name).cloned().ok_or_else(|| format!("অজানা struct '{}'", name))?;
         if args.len() != layout.fields.len() {
@@ -787,6 +863,11 @@ impl Gen {
                 }
                 // Not a local — may be a top-level `ধ্রুবক`, whose
                 // initializer is re-lowered here (see `Gen::consts`).
+                if let Some((data_id, inner_ty, _)) = self.shared_consts.get(&id.name).cloned() {
+                    let gv = self.module.declare_data_in_func(data_id, b.func);
+                    let addr = b.ins().symbol_value(self.ptr_ty, gv);
+                    return Ok(self.load_cval(b, &Ty::Shared(Box::new(inner_ty)), addr, 0));
+                }
                 if let Some(init) = self.consts.get(&id.name).cloned() {
                     return self.lower_expr(b, &init, env);
                 }
@@ -804,6 +885,8 @@ impl Gen {
                             "কপি" => return self.lower_copy(b, args, env),
                             "লেখায়" => return self.lower_to_text(b, args, env),
                             "শেয়ার_করো" => return self.lower_share(b, args, env),
+                            "মান" => return self.lower_shared_get(b, args, env),
+                            "বসাও" => return self.lower_shared_set(b, args, env),
                             // Reads a line from stdin — a builtin, not a
                             // `ফাইল` member, since it reads from the user.
                             "পড়ো_লাইন" => {
@@ -1866,6 +1949,17 @@ impl Gen {
             env.push();
             let mut loops: Vec<LoopCtx> = Vec::new();
 
+            // Every `শেয়ার T` constant's cell is allocated exactly once,
+            // here, before anything else runs — including `kl_ui_init`,
+            // since a UI handler may read one on the very first rebuild.
+            for name in self.shared_const_order.clone() {
+                let (data_id, _inner_ty, init) = self.shared_consts.get(&name).cloned().unwrap();
+                let v = self.lower_expr(&mut b, &init, &mut env)?;
+                let gv = self.module.declare_data_in_func(data_id, b.func);
+                let addr = b.ins().symbol_value(self.ptr_ty, gv);
+                self.store_cval(&mut b, &v, addr, 0);
+            }
+
             // A UI app opens its window BEFORE running the app body, because
             // body statements like `গ্রাফিক্স.টিক(...)` install timers on
             // that window.
@@ -2154,6 +2248,8 @@ pub fn emit_for(prog: &Program, target: crate::link::Target) -> Result<Vec<u8>, 
         funcs: HashMap::new(),
         structs: HashMap::new(),
         consts: HashMap::new(),
+        shared_consts: HashMap::new(),
+        shared_const_order: Vec::new(),
         str_counter: 0,
         try_depth: 0,
         try_handlers: Vec::new(),
@@ -2195,7 +2291,22 @@ pub fn emit_for(prog: &Program, target: crate::link::Target) -> Result<Vec<u8>, 
     }
 
     for c in &prog.consts {
-        gen.consts.insert(c.name.name.clone(), c.init.clone());
+        match resolve_type(&c.ty) {
+            Ty::Shared(inner) => {
+                let data_id = gen
+                    .module
+                    .declare_data(&format!("__kolom_shared_const_{}", c.name.name), Linkage::Local, true, false)
+                    .map_err(|e| e.to_string())?;
+                let mut desc = DataDescription::new();
+                desc.define_zeroinit(8);
+                gen.module.define_data(data_id, &desc).map_err(|e| e.to_string())?;
+                gen.shared_consts.insert(c.name.name.clone(), (data_id, *inner, c.init.clone()));
+                gen.shared_const_order.push(c.name.name.clone());
+            }
+            _ => {
+                gen.consts.insert(c.name.name.clone(), c.init.clone());
+            }
+        }
     }
 
     for f in &prog.funcs {

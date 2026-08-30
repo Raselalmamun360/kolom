@@ -89,6 +89,62 @@ pub fn assert_matches_reference(fixture: &str) {
 
 /// As `assert_matches_reference`, with env vars and an option to run in a
 /// freshly-cleared working directory (for fixtures that create files).
+/// Like `build`, but resolves `ইম্পোর্ট`-ed user modules against the
+/// fixture's own directory first (`kolom_cli::resolve_user_modules`, the
+/// same resolution `কলম বিল্ড` uses) — needed by a fixture that imports a
+/// sibling `.ক` file. `build`/`run_with` can't do this themselves: they take
+/// already-read source text, disconnected from the directory a module import
+/// would need to resolve against.
+fn build_fixture(fixture: &str) -> Built {
+    let dir = fixture_dir(fixture);
+    let src = std::fs::read_to_string(dir.join("main.ক"))
+        .unwrap_or_else(|e| panic!("{fixture}: cannot read main.ক: {e}"));
+    let (tokens, lex_errs) = kolom_lexer::lex(&src);
+    assert!(lex_errs.is_empty(), "{fixture}: lex errors: {lex_errs:?}");
+    let (mut prog, parse_errs) = kolom_syntax::parse(tokens);
+    assert!(parse_errs.is_empty(), "{fixture}: parse errors: {parse_errs:?}");
+    kolom_cli::resolve_user_modules(&mut prog, &dir)
+        .unwrap_or_else(|e| panic!("{fixture}: module resolution failed: {e}"));
+
+    let obj_bytes = kolom_codegen_cranelift::emit(&prog).unwrap_or_else(|e| panic!("{fixture}: codegen failed: {e}"));
+    let out_dir = std::env::temp_dir().join("kolom-cranelift-tests").join(fixture);
+    std::fs::create_dir_all(&out_dir).unwrap();
+    let obj = out_dir.join("out.obj");
+    let exe = out_dir.join("out.exe");
+    std::fs::write(&obj, &obj_bytes).unwrap();
+    kolom_codegen_cranelift::link_executable(&obj, &exe)
+        .unwrap_or_else(|e| panic!("{fixture}: link failed: {e}"));
+    Built { exe, dir: out_dir }
+}
+
+/// As `assert_matches_reference`, for a fixture that imports a sibling `.ব`
+/// module.
+pub fn assert_matches_reference_module(fixture: &str) {
+    let dir = fixture_dir(fixture);
+    let expected = std::fs::read_to_string(dir.join("expected.txt"))
+        .unwrap_or_else(|e| panic!("{fixture}: cannot read expected.txt: {e}"));
+    let built = build_fixture(fixture);
+    let res = Command::new(&built.exe)
+        .output()
+        .unwrap_or_else(|e| panic!("{fixture}: failed to run produced exe: {e}"));
+    assert!(
+        res.status.success(),
+        "{fixture}: produced exe exited {:?}:
+{}",
+        res.status.code(),
+        String::from_utf8_lossy(&res.stderr)
+    );
+    let got = String::from_utf8_lossy(&res.stdout).into_owned();
+    let norm = |s: &str| s.replace("
+", "
+");
+    assert_eq!(
+        norm(&got),
+        norm(&expected),
+        "{fixture}: native output differs from the interpreter's reference expected.txt"
+    );
+}
+
 pub fn assert_matches_reference_with(fixture: &str, envs: &[(&str, &str)], clean_cwd: bool) {
     let dir = fixture_dir(fixture);
     let src = std::fs::read_to_string(dir.join("main.ক"))

@@ -16,3 +16,4 @@ target-lexicon = "0.13.5"
 
 [dev-dependencies]
 kolom-lexer = { path = "../kolom-lexer" }
+kolom-cli = { path = "../kolom-cli" }
