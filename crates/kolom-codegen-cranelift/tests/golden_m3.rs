@@ -76,6 +76,11 @@ fn golden_45_stdlib_statistics() {
     assert_matches_reference("45_stdlib_statistics");
 }
 
+#[test]
+fn golden_46_builtin_sort() {
+    assert_matches_reference("46_builtin_sort");
+}
+
 /// র‍্যান্ডম is the one fixture that cannot use the shared reference: this
 /// backend's PRNG deliberately does not reproduce the interpreter's exact
 /// sequence. Its contract is the range, so that is what gets asserted.

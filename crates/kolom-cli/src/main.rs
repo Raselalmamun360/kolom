@@ -27,7 +27,7 @@ const HELP: &str = "কলম — বাংলা প্রোগ্রামি
 fn main() -> ExitCode {
     let args: Vec<String> = std::env::args().skip(1).collect();
     match args.first().map(|s| s.as_str()) {
-        Some("run") | Some("চালাও") => cmd_run(args.get(1)),
+        Some("run") | Some("চালাও") => cmd_run(args.get(1), args.get(2..).unwrap_or(&[])),
         Some("build") | Some("বিল্ড") => {
             let rest: Vec<&String> = args[1..].iter().filter(|a| !a.starts_with("--")).collect();
             cmd_build(rest.first().copied(), rest.get(1).copied())
@@ -107,7 +107,7 @@ fn display_file_name(file: &str) -> String {
         .unwrap_or_else(|| file.to_string())
 }
 
-fn cmd_run(path: Option<&String>) -> ExitCode {
+fn cmd_run(path: Option<&String>, extra_args: &[String]) -> ExitCode {
     let (prog, _file, name) = match check_program(path) {
         Ok(x) => x,
         Err(c) => return c,
@@ -115,7 +115,7 @@ fn cmd_run(path: Option<&String>) -> ExitCode {
 
     let stdout = std::io::stdout();
     let mut lock = stdout.lock();
-    match kolom_interp::run(&prog, &mut lock) {
+    match kolom_interp::run_with_argv(&prog, &mut lock, extra_args.to_vec()) {
         Ok(()) => ExitCode::SUCCESS,
         Err(e) => {
             let _ = writeln!(

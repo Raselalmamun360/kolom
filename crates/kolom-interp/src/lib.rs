@@ -100,9 +100,19 @@ struct Interp<'o> {
     net: HashMap<u32, std::net::TcpStream>,
     net_next: u32,
     structs: HashMap<String, Vec<String>>,
+    argv: Vec<String>,
 }
 
 pub fn run(prog: &Program, out: &mut dyn Write) -> Result<(), InterpError> {
+    run_with_argv(prog, out, Vec::new())
+}
+
+/// As `run`, but with `সিস্টেম.আর্গুমেন্ট()`'s value supplied explicitly —
+/// used by `কলম চালাও file.ক arg1 arg2`, where `argv` is everything after
+/// the script path. Every other caller (the `পাতা` editor's run-in-place,
+/// the golden-test harness) has no such arguments, hence the plain `run`
+/// wrapper defaulting to an empty vector.
+pub fn run_with_argv(prog: &Program, out: &mut dyn Write, argv: Vec<String>) -> Result<(), InterpError> {
     let seed_ms = std::time::SystemTime::now()
         .duration_since(std::time::UNIX_EPOCH)
         .map(|d| d.as_millis() as u64)
@@ -115,6 +125,7 @@ pub fn run(prog: &Program, out: &mut dyn Write) -> Result<(), InterpError> {
         net: HashMap::new(),
         net_next: 1,
         structs: HashMap::new(),
+        argv,
     };
     for s in &prog.structs {
         let field_names: Vec<String> = s.fields.iter().map(|(n, _)| n.name.clone()).collect();
@@ -942,6 +953,17 @@ impl<'o> Interp<'o> {
                     .map(|d| d.as_secs_f64())
                     .unwrap_or(0.0),
             )),
+            ("সময়", "বছর", []) => Ok(Value::Num(now_civil().0)),
+            ("সময়", "মাস", []) => Ok(Value::Num(now_civil().1 as i64)),
+            ("সময়", "দিন", []) => Ok(Value::Num(now_civil().2 as i64)),
+            ("সময়", "ঘণ্টা", []) => Ok(Value::Num(now_time_of_day().0 as i64)),
+            ("সময়", "মিনিট", []) => Ok(Value::Num(now_time_of_day().1 as i64)),
+            ("সময়", "সেকেন্ড_অংশ", []) => Ok(Value::Num(now_time_of_day().2 as i64)),
+            ("সময়", "বর্তমান_তারিখ_লেখা", []) => {
+                let (y, mo, d) = now_civil();
+                let (h, mi, s) = now_time_of_day();
+                Ok(Value::Txt(format!("{y:04}-{mo:02}-{d:02} {h:02}:{mi:02}:{s:02}")))
+            }
 
             // র‍্যান্ডম
             ("র‍্যান্ডম", "বীজ", [Value::Num(s)]) => {
@@ -1387,6 +1409,14 @@ impl<'o> Interp<'o> {
                 Ok(vecf_val(vec![slope, intercept]))
             }
 
+            // সিস্টেম
+            ("সিস্টেম", "আর্গুমেন্ট", []) => Ok(Value::Arr(Rc::new(RefCell::new(
+                self.argv.iter().map(|s| Value::Txt(s.clone())).collect(),
+            )))),
+            ("সিস্টেম", "পরিবেশ", [Value::Txt(name)]) => {
+                Ok(Value::Txt(std::env::var(name).unwrap_or_default()))
+            }
+
             // গ্রাফিক্স — ইন্টারপ্রেটেড মোডে আঁকা no-op
             ("গ্রাফিক্স", _, _) => Ok(Value::Null),
 
@@ -1450,6 +1480,30 @@ impl<'o> Interp<'o> {
             }
             let v = self.eval(&args[0])?;
             return Ok(deep_copy(&v));
+        }
+        if name == "সাজাও" {
+            if args.len() != 1 {
+                return Err(err(
+                    pos,
+                    format!(
+                        "'সাজাও' ১টি আর্গুমেন্ট নেয়, {}টি পেয়েছে",
+                        bn_num(args.len() as u32)
+                    ),
+                ));
+            }
+            let v = self.eval(&args[0])?;
+            let arr = match v {
+                Value::Arr(a) => a,
+                _ => return Err(err(pos, "'সাজাও' সংখ্যা[]/দশমিক[]/লেখা[] নেয়")),
+            };
+            let mut items = arr.borrow().clone();
+            items.sort_by(|a, b| match (a, b) {
+                (Value::Num(x), Value::Num(y)) => x.cmp(y),
+                (Value::Dec(x), Value::Dec(y)) => x.partial_cmp(y).unwrap_or(std::cmp::Ordering::Equal),
+                (Value::Txt(x), Value::Txt(y)) => x.cmp(y),
+                _ => std::cmp::Ordering::Equal,
+            });
+            return Ok(Value::Arr(Rc::new(RefCell::new(items))));
         }
         if name == "শেয়ার_করো" {
             if args.len() != 1 {
@@ -2014,6 +2068,43 @@ fn stat_variance(v: &[f64]) -> f64 {
 fn stat_covariance(a: &[f64], b: &[f64]) -> f64 {
     let (ma, mb) = (stat_mean(a), stat_mean(b));
     a.iter().zip(b).map(|(x, y)| (x - ma) * (y - mb)).sum::<f64>() / a.len() as f64
+}
+
+fn now_epoch_ms() -> i64 {
+    std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map(|d| d.as_millis() as i64)
+        .unwrap_or(0)
+}
+
+/// Howard Hinnant's `civil_from_days` — days-since-epoch to (year, month,
+/// day) in the proleptic Gregorian calendar. Public-domain algorithm, no
+/// date crate needed; correct for any i64 day count, not just "now".
+fn civil_from_days(z: i64) -> (i64, u32, u32) {
+    let z = z + 719468;
+    let era = if z >= 0 { z } else { z - 146096 } / 146097;
+    let doe = (z - era * 146097) as u64;
+    let yoe = (doe - doe / 1460 + doe / 36524 - doe / 146096) / 365;
+    let y = yoe as i64 + era * 400;
+    let doy = doe - (365 * yoe + yoe / 4 - yoe / 100);
+    let mp = (5 * doy + 2) / 153;
+    let d = (doy - (153 * mp + 2) / 5 + 1) as u32;
+    let m = if mp < 10 { mp + 3 } else { mp - 9 } as u32;
+    let y = if m <= 2 { y + 1 } else { y };
+    (y, m, d)
+}
+
+/// (year, month, day) for the current moment — UTC, to sidestep timezone
+/// dependence.
+fn now_civil() -> (i64, u32, u32) {
+    let days = now_epoch_ms().div_euclid(1000).div_euclid(86400);
+    civil_from_days(days)
+}
+
+/// (hour, minute, second) for the current moment — UTC.
+fn now_time_of_day() -> (u32, u32, u32) {
+    let secs = now_epoch_ms().div_euclid(1000).rem_euclid(86400) as u32;
+    (secs / 3600, (secs % 3600) / 60, secs % 60)
 }
 
 fn values_eq(l: &Value, r: &Value) -> bool {

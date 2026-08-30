@@ -704,6 +704,28 @@ impl Gen {
         }
     }
 
+    /// Non-mutating: returns a fresh sorted array, source untouched. The
+    /// element type is fixed by sema at compile time, so this picks a
+    /// specific runtime entry point rather than needing one polymorphic fn.
+    fn lower_sort(&mut self, b: &mut FunctionBuilder, args: &[Expr], env: &mut Env) -> Result<CVal, String> {
+        if args.len() != 1 {
+            return Err("M2 codegen: সাজাও() ঠিক একটি আর্গুমেন্ট নেয়".into());
+        }
+        let v = self.lower_expr(b, &args[0], env)?;
+        match v {
+            CVal::Arr(ptr, elem_ty) => {
+                let rt = match *elem_ty {
+                    Ty::Num => "kl_sort_num",
+                    Ty::Dec => "kl_sort_dec",
+                    Ty::Txt => "kl_sort_txt",
+                    _ => return Err("M2 codegen: সাজাও() শুধু 'সংখ্যা[]'/'দশমিক[]'/'লেখা[]'-এ সমর্থিত".into()),
+                };
+                Ok(CVal::Arr(self.call_rt(b, rt, &[ptr]), elem_ty))
+            }
+            _ => Err("M2 codegen: সাজাও() একটি অ্যারে নেয়".into()),
+        }
+    }
+
     fn lower_to_text(&mut self, b: &mut FunctionBuilder, args: &[Expr], env: &mut Env) -> Result<CVal, String> {
         if args.len() != 1 {
             return Err("M2 codegen: লেখায়() ঠিক একটি আর্গুমেন্ট নেয়".into());
@@ -1141,6 +1163,7 @@ impl Gen {
                             "লেখো" => return self.lower_print(b, args, env),
                             "দৈর্ঘ্য" => return self.lower_length(b, args, env),
                             "কপি" => return self.lower_copy(b, args, env),
+                            "সাজাও" => return self.lower_sort(b, args, env),
                             "লেখায়" => return self.lower_to_text(b, args, env),
                             "শেয়ার_করো" => return self.lower_share(b, args, env),
                             "মান" => return self.lower_shared_get(b, args, env),
@@ -1920,6 +1943,24 @@ impl Gen {
                 let y = self.lower_expr_arr(b, &args[1], env)?;
                 Ok(CVal::Arr(self.call_rt(b, "kl_stat_linreg", &[x, y]), Box::new(Ty::Dec)))
             }
+
+            ("সিস্টেম", "আর্গুমেন্ট") => {
+                Ok(CVal::Arr(self.call_rt(b, "kl_sys_args", &[]), Box::new(Ty::Txt)))
+            }
+            ("সিস্টেম", "পরিবেশ") => {
+                let name = self.lower_expr_txt(b, &args[0], env)?;
+                Ok(CVal::Txt(self.call_rt(b, "kl_sys_env", &[name])))
+            }
+
+            ("সময়", "এখন_মিলিসেকেন্ড") => Ok(CVal::Num(self.call_rt(b, "kl_time_now_ms", &[]))),
+            ("সময়", "সেকেন্ড") => Ok(CVal::Dec(self.call_rt(b, "kl_time_clock", &[]))),
+            ("সময়", "বছর") => Ok(CVal::Num(self.call_rt(b, "kl_time_year", &[]))),
+            ("সময়", "মাস") => Ok(CVal::Num(self.call_rt(b, "kl_time_month", &[]))),
+            ("সময়", "দিন") => Ok(CVal::Num(self.call_rt(b, "kl_time_day", &[]))),
+            ("সময়", "ঘণ্টা") => Ok(CVal::Num(self.call_rt(b, "kl_time_hour", &[]))),
+            ("সময়", "মিনিট") => Ok(CVal::Num(self.call_rt(b, "kl_time_minute", &[]))),
+            ("সময়", "সেকেন্ড_অংশ") => Ok(CVal::Num(self.call_rt(b, "kl_time_second_part", &[]))),
+            ("সময়", "বর্তমান_তারিখ_লেখা") => Ok(CVal::Txt(self.call_rt(b, "kl_time_now_str", &[]))),
 
             _ => Err(format!(
                 "M4 codegen: '{}.{}' এখনো সমর্থিত নয় (গ্রাফিক্স UI ইঞ্জিনের অংশ)",
@@ -2926,6 +2967,23 @@ pub fn emit_for(prog: &Program, target: crate::link::Target) -> Result<Vec<u8>, 
         ("kl_stat_covariance", &[ptr_ty, ptr_ty], &[f64t]),
         ("kl_stat_correlation", &[ptr_ty, ptr_ty], &[f64t]),
         ("kl_stat_linreg", &[ptr_ty, ptr_ty], &[ptr_ty]),
+        // সাজাও (global builtin)
+        ("kl_sort_num", &[ptr_ty], &[ptr_ty]),
+        ("kl_sort_dec", &[ptr_ty], &[ptr_ty]),
+        ("kl_sort_txt", &[ptr_ty], &[ptr_ty]),
+        // সিস্টেম
+        ("kl_sys_args", &[], &[ptr_ty]),
+        ("kl_sys_env", &[ptr_ty], &[ptr_ty]),
+        // সময় — এতদিন Cranelift-এ ওয়্যার করা হয়নি (দেখুন kolom-runtime-এর নোট)
+        ("kl_time_now_ms", &[], &[i64t]),
+        ("kl_time_clock", &[], &[f64t]),
+        ("kl_time_year", &[], &[i64t]),
+        ("kl_time_month", &[], &[i64t]),
+        ("kl_time_day", &[], &[i64t]),
+        ("kl_time_hour", &[], &[i64t]),
+        ("kl_time_minute", &[], &[i64t]),
+        ("kl_time_second_part", &[], &[i64t]),
+        ("kl_time_now_str", &[], &[ptr_ty]),
     ];
     let mut rt = HashMap::new();
     for (name, params, rets) in stdlib_imports {

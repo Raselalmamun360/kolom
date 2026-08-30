@@ -2044,3 +2044,168 @@ pub extern "C" fn kl_stat_linreg(x: *mut u8, y: *mut u8) -> *mut u8 {
     let intercept = my - slope * mx;
     arr_from_vecf(&[slope, intercept])
 }
+
+// ============================================================================
+// সাজাও (global builtin, not a stdlib module member — same "always
+// available" tier as `দৈর্ঘ্য`/`কপি`) — non-mutating, returns a fresh sorted
+// array; the element type (সংখ্যা/দশমিক/লেখা) is fixed by sema at compile
+// time, so lowering picks one of these three directly rather than needing a
+// single polymorphic runtime entry point.
+// ============================================================================
+
+#[no_mangle]
+pub extern "C" fn kl_sort_num(p: *mut u8) -> *mut u8 {
+    let len = kl_arr_len(p);
+    let mut v: Vec<i64> = (0..len).map(|i| unsafe { *(kl_arr_get_ptr(p, i) as *const i64) }).collect();
+    v.sort();
+    let out = kl_arr_new(8, len, 0);
+    for x in &v {
+        kl_arr_push(out, (x as *const i64) as *const u8);
+    }
+    out
+}
+
+#[no_mangle]
+pub extern "C" fn kl_sort_dec(p: *mut u8) -> *mut u8 {
+    let len = kl_arr_len(p);
+    let mut v: Vec<f64> = (0..len).map(|i| unsafe { *(kl_arr_get_ptr(p, i) as *const f64) }).collect();
+    v.sort_by(|a, b| a.partial_cmp(b).unwrap_or(std::cmp::Ordering::Equal));
+    let out = kl_arr_new(8, len, 0);
+    for x in &v {
+        kl_arr_push(out, (x as *const f64) as *const u8);
+    }
+    out
+}
+
+#[no_mangle]
+pub extern "C" fn kl_sort_txt(p: *mut u8) -> *mut u8 {
+    let len = kl_arr_len(p);
+    let mut items: Vec<(String, *mut u8)> = (0..len)
+        .map(|i| {
+            let ptr = unsafe { *(kl_arr_get_ptr(p, i) as *const *mut u8) };
+            let s = String::from_utf8_lossy(unsafe { str_slice(ptr) }).into_owned();
+            (s, ptr)
+        })
+        .collect();
+    items.sort_by(|a, b| a.0.cmp(&b.0));
+    let drop_addr = kl_str_decref as *const () as usize as i64;
+    let out = kl_arr_new(8, len, drop_addr);
+    for (_, ptr) in &items {
+        // নতুন অ্যারে তার নিজস্ব রেফারেন্স ধরে রাখে — মূল অ্যারে অক্ষত থাকে
+        // (`সাজাও` non-mutating), দুটোই একই স্ট্রিং শেয়ার করে refcount-এর মাধ্যমে।
+        kl_rc_incref(*ptr);
+        kl_arr_push(out, (ptr as *const *mut u8) as *const u8);
+    }
+    out
+}
+
+// ============================================================================
+// সিস্টেম (system) — কমান্ড-লাইন আর্গুমেন্ট ও এনভায়রনমেন্ট ভ্যারিয়েবল। এই
+// runtime যে প্রসেসে লিংক হয়েছে তারই `std::env::args()`/`var()` পড়ে —
+// নেটিভ কম্পাইল করা .exe নিজের OS-দেওয়া argv সরাসরি পায়, কোনো বিশেষ
+// পাস-থ্রু `কলম বিল্ড`-এর কাছ থেকে লাগে না (ইন্টারপ্রেটেড মোডে
+// `kolom_interp::run_with_argv` একইভাবে `কলম চালাও file.ক ...`-এর অতিরিক্ত
+// আর্গুমেন্ট আলাদাভাবে থ্রেড করে, যেহেতু সেখানে `std::env::args()` কলম
+// নিজের argv (`kolom চালাও file.ক ...`) দেখাত, স্ক্রিপ্টের নয়)।
+// ============================================================================
+
+#[no_mangle]
+pub extern "C" fn kl_sys_args() -> *mut u8 {
+    let args: Vec<String> = std::env::args().skip(1).collect();
+    let drop_addr = kl_str_decref as *const () as usize as i64;
+    let arr = kl_arr_new(8, args.len() as i64, drop_addr);
+    for a in &args {
+        let s = str_from_rust(a);
+        kl_arr_push(arr, (&s as *const *mut u8) as *const u8);
+    }
+    arr
+}
+
+#[no_mangle]
+pub extern "C" fn kl_sys_env(name: *mut u8) -> *mut u8 {
+    let name = String::from_utf8_lossy(unsafe { str_slice(name) }).into_owned();
+    str_from_rust(&std::env::var(&name).unwrap_or_default())
+}
+
+// ============================================================================
+// সময় (time) — এই মডিউলটা সেমা/ইন্টারপ্রেটারে সবসময়ই কাজ করত, কিন্তু কখনো
+// Cranelift-এ ওয়্যার করা হয়নি (`kl_time_now_ms`/`kl_time_clock` নামগুলো এখনো
+// legacy C ব্যাকএন্ডের নিজস্ব ইনলাইন C কোড থেকে — ওটাই এই নামের একমাত্র
+// আগের বাস্তবায়ন ছিল, রিমুভড, কিন্তু নাম দুটো ধরে রাখা হলো ধারাবাহিকতার
+// জন্য) — `কলম বিল্ড`-এ `সময়.এখন_মিলিসেকেন্ড()` কল করলে "সমর্থিত নয়" ত্রুটি
+// দিত। এখানে বাকি সব ক্যালেন্ডার ফাংশনের সাথে একবারে ফিক্স করা হলো।
+// ============================================================================
+
+#[no_mangle]
+pub extern "C" fn kl_time_now_ms() -> i64 {
+    std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map(|d| d.as_millis() as i64)
+        .unwrap_or(0)
+}
+
+#[no_mangle]
+pub extern "C" fn kl_time_clock() -> f64 {
+    std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map(|d| d.as_secs_f64())
+        .unwrap_or(0.0)
+}
+
+/// Howard Hinnant's `civil_from_days` — days-since-epoch to (year, month,
+/// day) in the proleptic Gregorian calendar. Public-domain algorithm, no
+/// date crate needed.
+fn civil_from_days(z: i64) -> (i64, u32, u32) {
+    let z = z + 719468;
+    let era = if z >= 0 { z } else { z - 146096 } / 146097;
+    let doe = (z - era * 146097) as u64;
+    let yoe = (doe - doe / 1460 + doe / 36524 - doe / 146096) / 365;
+    let y = yoe as i64 + era * 400;
+    let doy = doe - (365 * yoe + yoe / 4 - yoe / 100);
+    let mp = (5 * doy + 2) / 153;
+    let d = (doy - (153 * mp + 2) / 5 + 1) as u32;
+    let m = if mp < 10 { mp + 3 } else { mp - 9 } as u32;
+    let y = if m <= 2 { y + 1 } else { y };
+    (y, m, d)
+}
+
+fn now_civil() -> (i64, u32, u32) {
+    let days = kl_time_now_ms().div_euclid(1000).div_euclid(86400);
+    civil_from_days(days)
+}
+
+fn now_time_of_day() -> (u32, u32, u32) {
+    let secs = kl_time_now_ms().div_euclid(1000).rem_euclid(86400) as u32;
+    (secs / 3600, (secs % 3600) / 60, secs % 60)
+}
+
+#[no_mangle]
+pub extern "C" fn kl_time_year() -> i64 {
+    now_civil().0
+}
+#[no_mangle]
+pub extern "C" fn kl_time_month() -> i64 {
+    now_civil().1 as i64
+}
+#[no_mangle]
+pub extern "C" fn kl_time_day() -> i64 {
+    now_civil().2 as i64
+}
+#[no_mangle]
+pub extern "C" fn kl_time_hour() -> i64 {
+    now_time_of_day().0 as i64
+}
+#[no_mangle]
+pub extern "C" fn kl_time_minute() -> i64 {
+    now_time_of_day().1 as i64
+}
+#[no_mangle]
+pub extern "C" fn kl_time_second_part() -> i64 {
+    now_time_of_day().2 as i64
+}
+#[no_mangle]
+pub extern "C" fn kl_time_now_str() -> *mut u8 {
+    let (y, mo, d) = now_civil();
+    let (h, mi, s) = now_time_of_day();
+    str_from_rust(&format!("{y:04}-{mo:02}-{d:02} {h:02}:{mi:02}:{s:02}"))
+}
