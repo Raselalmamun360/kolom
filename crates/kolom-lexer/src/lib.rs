@@ -14,7 +14,7 @@ pub const KEYWORDS: &[&str] = &[
     "ফাংশন",
     "ধরি",
     "ধ্রুবক",
-    "ফেরাও",
+    "রিটার্ন",
     "যদি",
     "নাহলে",
     "লুপ",
@@ -44,12 +44,12 @@ pub const KEYWORDS: &[&str] = &[
     "সংখ্যা",
     "দশমিক",
     "লেখা",
-    "সত্যতা",
+    "বুলিয়ান",
     "অক্ষর",
     // `ফাঁকা` is both the null literal (listed above with সত্য/মিথ্যা) and the
     // void type name, so it is deliberately listed once and used in both roles.
     "ম্যাপ",
-    "ডাটা",
+    "তথ্য",
     "চেষ্টা",
     "ধরো",
 ];

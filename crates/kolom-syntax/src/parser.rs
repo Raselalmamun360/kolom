@@ -7,7 +7,7 @@ const PRIMITIVE_TYPES: &[&str] = &[
     "সংখ্যা",
     "দশমিক",
     "লেখা",
-    "সত্যতা",
+    "বুলিয়ান",
     "অক্ষর",
     "ফাঁকা",
 ];
@@ -215,7 +215,7 @@ impl P {
                     self.recover_top();
                     self.skip_nl();
                 }
-            } else if self.at_kw("ডাটা") {
+            } else if self.at_kw("তথ্য") {
                 if let Some(s) = self.parse_struct_decl() {
                     prog.structs.push(s);
                 }
@@ -282,7 +282,7 @@ impl P {
 
     fn parse_struct_decl(&mut self) -> Option<StructDecl> {
         self.bump();
-        let name = self.expect_ident("'ডাটা'-এর পরে নাম")?;
+        let name = self.expect_ident("'তথ্য'-এর পরে নাম")?;
         if !self.expect_op("{") {
             return None;
         }
@@ -294,7 +294,7 @@ impl P {
                 break;
             }
             if self.at_eof() {
-                self.diag_here("ডাটা বন্ধ হয়নি — '}' পাওয়া যায়নি".to_string());
+                self.diag_here("তথ্য বন্ধ হয়নি — '}' পাওয়া যায়নি".to_string());
                 break;
             }
             let fname = self.expect_ident("ফিল্ডের নাম")?;
@@ -488,10 +488,10 @@ impl P {
                 iter,
                 body,
             })
-        } else if self.at_kw("ফেরাও") {
+        } else if self.at_kw("রিটার্ন") {
             let pos = self.pos();
             if self.fn_depth == 0 {
-                self.diag_here("'ফেরাও' শুধু ফাংশনের ভেতরে বৈধ".to_string());
+                self.diag_here("'রিটার্ন' শুধু ফাংশনের ভেতরে বৈধ".to_string());
             }
             self.bump();
             let value = if self.starts_expr() {

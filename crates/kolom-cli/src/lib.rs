@@ -75,13 +75,13 @@ pub fn resolve_user_modules(
                 queue.push(imp.name.clone());
             }
         }
-        // `ডাটা` declarations are exported like functions and constants.
+        // `তথ্য` declarations are exported like functions and constants.
         // Without this a module could define a struct but nobody could name
         // its type, so `ফাংশন বানাও() -> বিন্দু` failed to resolve.
         for sd in sub_prog.structs.drain(..) {
             if let Some(existing) = prog.structs.iter().find(|e| e.name.name == sd.name.name) {
                 return Err(format!(
-                    "'{}' ডাটা দুইবার ঘোষিত — একবার মডিউল '{}'-এ, আরেকবার {}:{}-এ",
+                    "'{}' তথ্য দুইবার ঘোষিত — একবার মডিউল '{}'-এ, আরেকবার {}:{}-এ",
                     sd.name.name, mod_name, existing.name.pos.line, existing.name.pos.col
                 ));
             }

@@ -1379,6 +1379,14 @@ impl Gen {
     fn ensure_io_runtime(&mut self) {
         if !self.std_modules.contains(&"__io_emitted") {
             self.std_modules.push("__io_emitted");
+            // `লাইন_তালিকা`-র রিটার্ন টাইপ `লেখা[]` — সেই প্রোগ্রাম অন্য কোথাও
+            // `লেখা[]` ব্যবহার না করলেও `kl_arr_as` টাইপ/হেল্পার নিশ্চিতভাবে
+            // এমিট হওয়া দরকার।
+            self.ensure(&Ty::Arr(Box::new(Ty::Txt)));
+            // `kl_io_read_lines` (নিচে) `kl_str_split` কল করে, যেটা
+            // str_runtime()-এ — সেই টেক্সট এই io_runtime()-এর *আগে* এমিট
+            // হওয়া চাই, নাহলে C ফরওয়ার্ড-রেফারেন্স এরর দেয়।
+            self.ensure_str_runtime();
             self.impls.push(io_runtime().to_string());
         }
     }
@@ -1388,6 +1396,13 @@ impl Gen {
             self.std_modules.push("__fs_emitted");
             self.ensure(&Ty::Arr(Box::new(Ty::Txt)));
             self.impls.push(fs_runtime().to_string());
+        }
+    }
+
+    fn ensure_path_runtime(&mut self) {
+        if !self.std_modules.contains(&"__path_emitted") {
+            self.std_modules.push("__path_emitted");
+            self.impls.push(path_runtime().to_string());
         }
     }
 
@@ -1506,11 +1521,11 @@ impl Gen {
                 *ret_out = Ty::Dec;
                 format!("pow({}, {})", g(0), g(1))
             }
-            ("গণিত", "নিম্নমান") => {
+            ("গণিত", "ফ্লোর") => {
                 *ret_out = Ty::Num;
                 format!("(int64_t)floor({})", g(0))
             }
-            ("গণিত", "উর্ধ্বমান") => {
+            ("গণিত", "সিলিং") => {
                 *ret_out = Ty::Num;
                 format!("(int64_t)ceil({})", g(0))
             }
@@ -1549,7 +1564,7 @@ impl Gen {
             ("লেখা", _) => {
                 self.ensure_str_runtime();
                 *ret_out = match item {
-                    "সেপারেট" => Ty::Arr(Box::new(Ty::Txt)),
+                    "স্প্লিট" => Ty::Arr(Box::new(Ty::Txt)),
                     "জুড়াও" | "বড়হাতের" | "ছোটহাতের" | "ছাঁটো" | "বদলাও" | "স্লাইস" => Ty::Txt,
                     "খুঁজো" => Ty::Num,
                     _ => Ty::Bool,
@@ -1558,7 +1573,7 @@ impl Gen {
                     "বড়হাতের" => "kl_str_upper",
                     "ছোটহাতের" => "kl_str_lower",
                     "ছাঁটো" => "kl_str_trim",
-                    "সেপারেট" => "kl_str_split",
+                    "স্প্লিট" => "kl_str_split",
                     "জুড়াও" => "kl_str_join",
                     "বদলাও" => "kl_str_replace",
                     "খুঁজো" => "kl_str_find",
@@ -1574,12 +1589,18 @@ impl Gen {
                 self.ensure_io_runtime();
                 *ret_out = match item {
                     "পড়ো" => Ty::Txt,
+                    "লাইন_তালিকা" => Ty::Arr(Box::new(Ty::Txt)),
                     _ => Ty::Null,
                 };
+                // এক্সপ্লিসিট ম্যাচ, wildcard নয় — sema-approved কিন্তু এখানে
+                // বাস্তবায়িত নয় এমন কোনো item silently ভুল ফাংশনে না গিয়ে
+                // স্পষ্ট প্যানিক দেয়।
                 let fname = match item {
                     "পড়ো" => "kl_io_read_file",
                     "লেখো" => "kl_io_write_file",
-                    _ => "kl_io_append_file",
+                    "এপেন্ড" => "kl_io_append_file",
+                    "লাইন_তালিকা" => "kl_io_read_lines",
+                    other => panic!("ফাইল.{other}: --সি (legacy) ব্যাকএন্ডে সমর্থিত নয়, ডিফল্ট Cranelift ব্যাকএন্ড ব্যবহার করুন"),
                 };
                 let joined: Vec<String> = vals.iter().map(|(_, v)| v.clone()).collect();
                 format!("{}({})", fname, joined.join(", "))
@@ -1590,6 +1611,8 @@ impl Gen {
                 *ret_out = match item {
                     "ফাইল_আছে" | "ডিরেক্টরি_আছে" => Ty::Bool,
                     "তালিকা" => Ty::Arr(Box::new(Ty::Txt)),
+                    "আকার" => Ty::Num,
+                    "বর্তমান_ডিরেক্টরি" => Ty::Txt,
                     _ => Ty::Null,
                 };
                 let fname = match item {
@@ -1599,7 +1622,28 @@ impl Gen {
                     "মুছো" => "kl_fs_remove",
                     "তালিকা" => "kl_fs_list",
                     "কপি" => "kl_fs_copy",
-                    _ => "kl_fs_move",
+                    "সরাও" => "kl_fs_move",
+                    "আকার" => "kl_fs_size",
+                    "বর্তমান_ডিরেক্টরি" => "kl_fs_cwd",
+                    // রিকার্সিভ ডিরেক্টরি ওয়াক (POSIX+Win32 দুই দিকেই) এবং
+                    // Windows FILETIME→epoch-ms রূপান্তর — legacy ব্যাকএন্ডে
+                    // ইচ্ছাকৃতভাবে বাদ, ডিফল্ট Cranelift ব্যাকএন্ডে যান।
+                    other => panic!("ফাইলসিস্টেম.{other}: --সি (legacy) ব্যাকএন্ডে সমর্থিত নয়, ডিফল্ট Cranelift ব্যাকএন্ড ব্যবহার করুন"),
+                };
+                let joined: Vec<String> = vals.iter().map(|(_, v)| v.clone()).collect();
+                format!("{}({})", fname, joined.join(", "))
+            }
+
+            ("পাথ", _) => {
+                self.ensure_path_runtime();
+                *ret_out = Ty::Txt;
+                let fname = match item {
+                    "জোড়ো" => "kl_path_join",
+                    "ফাইলনাম" => "kl_path_basename",
+                    "ডিরেক্টরিনাম" => "kl_path_dirname",
+                    "এক্সটেনশন" => "kl_path_extension",
+                    "পরম_পাথ" => "kl_path_abs",
+                    other => panic!("পাথ.{other}: --সি (legacy) ব্যাকএন্ডে সমর্থিত নয়, ডিফল্ট Cranelift ব্যাকএন্ড ব্যবহার করুন"),
                 };
                 let joined: Vec<String> = vals.iter().map(|(_, v)| v.clone()).collect();
                 format!("{}({})", fname, joined.join(", "))
@@ -1608,12 +1652,12 @@ impl Gen {
             ("জেসন", _) => {
                 self.ensure_json_runtime();
                 *ret_out = match item {
-                    "বৈধকি" => Ty::Bool,
+                    "বৈধ" => Ty::Bool,
                     "বের_হও" | "লেখা_বের_করো" => Ty::Txt,
                     _ => Ty::Num,
                 };
                 let fname = match item {
-                    "বৈধকি" => "kl_json_valid",
+                    "বৈধ" => "kl_json_valid",
                     "বের_হও" => "kl_json_escape",
                     "লেখা_বের_করো" => "kl_json_get_string",
                     _ => "kl_json_get_int",
@@ -1643,7 +1687,7 @@ impl Gen {
                 *ret_out = Ty::Num;
                 "kl_time_now_ms()".into()
             }
-            ("সময়", "ঘড়ি") => {
+            ("সময়", "সেকেন্ড") => {
                 *ret_out = Ty::Dec;
                 "kl_time_clock()".into()
             }
@@ -2950,9 +2994,23 @@ static void kl_io_write_file(kl_str path, kl_str content) {
 
 static void kl_io_append_file(kl_str path, kl_str content) {
     FILE* f = fopen((const char*)path.data, "ab");
-    if (!f) kl_io_fail("ফাইলে যোগ করা যায়নি", (const char*)path.data);
+    if (!f) kl_io_fail("ফাইলে এপেন্ড করা যায়নি", (const char*)path.data);
     fwrite(content.data, 1, content.data ? strlen((const char*)content.data) : 0, f);
     fclose(f);
+}
+
+static kl_arr_as kl_io_read_lines(kl_str path) {
+    kl_str content = kl_io_read_file(path);
+    kl_arr_as lines = kl_str_split(content, kl_str_lit("\n"));
+    for (int64_t i = 0; i < lines.len; i++) {
+        kl_str* s = &lines.data[i];
+        int64_t n = s->data ? (int64_t)strlen((const char*)s->data) : 0;
+        if (n > 0 && s->data[n - 1] == '\r') {
+            s->data[n - 1] = 0;
+            s->len = kl_cpcount(s->data, n - 1);
+        }
+    }
+    return lines;
 }
 "#
 }
@@ -2994,6 +3052,8 @@ fn fs_runtime() -> &'static str {
 #ifdef _WIN32
 #include <windows.h>
 #include <direct.h>
+#else
+#include <unistd.h>
 #endif
 
 static void kl_fs_fail(const char* what, const char* path) {
@@ -3082,6 +3142,120 @@ static void kl_fs_copy(kl_str from, kl_str to) {
 static void kl_fs_move(kl_str from, kl_str to) {
     if (rename((const char*)from.data, (const char*)to.data) != 0)
         kl_fs_fail("সরানো ব্যর্থ", (const char*)from.data);
+}
+
+static int64_t kl_fs_size(kl_str path) {
+    struct stat st;
+    if (stat((const char*)path.data, &st) != 0) kl_fs_fail("আকার পড়া যায়নি", (const char*)path.data);
+    return (int64_t)st.st_size;
+}
+
+static kl_str kl_fs_cwd(void) {
+    char buf[1024];
+#ifdef _WIN32
+    if (!_getcwd(buf, sizeof(buf))) kl_panic("বর্তমান ডিরেক্টরি পড়া যায়নি");
+#else
+    if (!getcwd(buf, sizeof(buf))) kl_panic("বর্তমান ডিরেক্টরি পড়া যায়নি");
+#endif
+    return kl_str_lit(buf);
+}
+"#
+}
+
+/// পাথ — লেক্সিক্যাল পাথ ম্যানিপুলেশন। `fs_runtime()`-এর মতো ডিস্ক-নির্ভর নয়
+/// (শুধু `পরম_পাথ`-এর জন্য cwd লাগে, `ensure_fs_runtime()` টেনে না এনে
+/// নিজস্ব ছোট cwd-লুকআপ রাখা হয়েছে যাতে `পাথ` মডিউল স্বনির্ভর থাকে)।
+fn path_runtime() -> &'static str {
+    r#"
+#ifdef _WIN32
+#include <direct.h>
+#else
+#include <unistd.h>
+#endif
+
+static bool kl_path_is_sep(char c) { return c == '/' || c == '\\'; }
+
+static kl_str kl_path_join(kl_str a, kl_str b) {
+    size_t na = a.data ? strlen((const char*)a.data) : 0;
+    if (na == 0) return kl_str_copy(b);
+    size_t nb = b.data ? strlen((const char*)b.data) : 0;
+    if (nb == 0) return kl_str_copy(a);
+    if (kl_path_is_sep((char)a.data[na - 1])) return kl_str_concat(a, b);
+#ifdef _WIN32
+    kl_str sep = kl_str_lit("\\");
+#else
+    kl_str sep = kl_str_lit("/");
+#endif
+    kl_str r = kl_str_concat(a, sep);
+    return kl_str_concat(r, b);
+}
+
+static kl_str kl_path_basename(kl_str path) {
+    if (!path.data) return kl_str_lit("");
+    const char* s = (const char*)path.data;
+    size_t n = strlen(s);
+    while (n > 0 && kl_path_is_sep(s[n - 1])) n--;
+    size_t end = n, start = end;
+    while (start > 0 && !kl_path_is_sep(s[start - 1])) start--;
+    if (start == end) return kl_str_lit("");
+    kl_str r = kl_str_alloc(end - start);
+    memcpy(r.data, s + start, end - start);
+    r.len = kl_cpcount(r.data, end - start);
+    return r;
+}
+
+static kl_str kl_path_dirname(kl_str path) {
+    if (!path.data) return kl_str_lit("");
+    const char* s = (const char*)path.data;
+    size_t n = strlen(s);
+    while (n > 0 && kl_path_is_sep(s[n - 1])) n--;
+    size_t end = n;
+    while (end > 0 && !kl_path_is_sep(s[end - 1])) end--;
+    while (end > 0 && kl_path_is_sep(s[end - 1])) end--;
+    kl_str r = kl_str_alloc(end);
+    if (end) memcpy(r.data, s, end);
+    r.len = kl_cpcount(r.data, end);
+    return r;
+}
+
+static kl_str kl_path_extension(kl_str path) {
+    if (!path.data) return kl_str_lit("");
+    const char* s = (const char*)path.data;
+    size_t n = strlen(s);
+    size_t end = n;
+    while (end > 0 && kl_path_is_sep(s[end - 1])) end--;
+    size_t base_start = end;
+    while (base_start > 0 && !kl_path_is_sep(s[base_start - 1])) base_start--;
+    size_t dot = end;
+    for (size_t i = end; i > base_start; i--) {
+        if (s[i - 1] == '.') { dot = i - 1; break; }
+    }
+    // dot == base_start মানে একটা dotfile (".gitignore")-এর নিজের leading dot
+    // — সেটাকে extension হিসেবে গোনা হয় না।
+    if (dot == end || dot == base_start) return kl_str_lit("");
+    size_t ext_start = dot + 1;
+    kl_str r = kl_str_alloc(end - ext_start);
+    if (end > ext_start) memcpy(r.data, s + ext_start, end - ext_start);
+    r.len = kl_cpcount(r.data, end - ext_start);
+    return r;
+}
+
+static kl_str kl_path_abs(kl_str path) {
+    const char* s = path.data ? (const char*)path.data : "";
+#ifdef _WIN32
+    bool is_abs = (s[0] && s[1] == ':' && (s[2] == '\\' || s[2] == '/')) || s[0] == '\\' || s[0] == '/';
+#else
+    bool is_abs = s[0] == '/';
+#endif
+    if (is_abs) return kl_str_copy(path);
+    char buf[1024];
+#ifdef _WIN32
+    if (!_getcwd(buf, sizeof(buf))) kl_panic("বর্তমান ডিরেক্টরি পড়া যায়নি");
+#else
+    if (!getcwd(buf, sizeof(buf))) kl_panic("বর্তমান ডিরেক্টরি পড়া যায়নি");
+#endif
+    kl_str cwd = kl_str_lit(buf);
+    return kl_path_join(cwd, path);
 }
 "#
 }

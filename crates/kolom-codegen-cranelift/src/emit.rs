@@ -75,17 +75,23 @@ fn is_owning(ty: &Ty) -> bool {
 /// places a Kolom program can raise one, since the language has no `throw`.
 ///
 /// Inside a `চেষ্টা` block, generated code polls immediately after each of
-/// these. Polling once per *statement* is not enough: `ফেরাও ফাইল.পড়ো(পথ)`
+/// these. Polling once per *statement* is not enough: `রিটার্ন ফাইল.পড়ো(পথ)`
 /// would return the failed call's placeholder before any statement boundary
 /// arrived, and `যদি (ফাইল.পড়ো(পথ) == "ক")` would branch on it.
 const FALLIBLE_RT: &[&str] = &[
     "kl_io_write_file",
     "kl_io_append_file",
     "kl_io_read_file",
+    "kl_io_read_lines",
     "kl_fs_mkdir",
     "kl_fs_remove",
+    "kl_fs_rmdir_all",
     "kl_fs_copy",
+    "kl_fs_copy_dir_all",
     "kl_fs_rename",
+    "kl_fs_size",
+    "kl_fs_mtime_ms",
+    "kl_fs_cwd",
     "kl_map_missing_key",
     "kl_net_connect",
     "kl_net_send",
@@ -166,7 +172,7 @@ fn resolve_type(te: &TypeExpr) -> Ty {
             "সংখ্যা" => Ty::Num,
             "দশমিক" => Ty::Dec,
             "লেখা" => Ty::Txt,
-            "সত্যতা" => Ty::Bool,
+            "বুলিয়ান" => Ty::Bool,
             "অক্ষর" => Ty::Ch,
             "ফাঁকা" => Ty::Null,
             other => Ty::Struct(other.to_string()),
@@ -258,7 +264,7 @@ pub struct Gen {
     rt: HashMap<&'static str, FuncId>,
 
     /// How many `চেষ্টা` blocks enclose the statement being lowered. Any jump
-    /// that leaves them — `ফেরাও`, `বিরতি`, `চলবে` — has to tell the runtime,
+    /// that leaves them — `রিটার্ন`, `বিরতি`, `চলবে` — has to tell the runtime,
     /// or its depth counter would never come back down and later failures
     /// would be swallowed by a block that has already finished.
     try_depth: usize,
@@ -686,7 +692,7 @@ impl Gen {
             }
             CVal::Dec(x) => Ok(CVal::Txt(self.call_rt(b, "kl_dec_to_text", &[x]))),
             CVal::Bool(x) => Ok(CVal::Txt(self.call_rt(b, "kl_bool_to_text", &[x]))),
-            _ => Err("M3 codegen: লেখায়() এখনো শুধু 'সংখ্যা'/'দশমিক'/'সত্যতা'-এ সমর্থিত".into()),
+            _ => Err("M3 codegen: লেখায়() এখনো শুধু 'সংখ্যা'/'দশমিক'/'বুলিয়ান'-এ সমর্থিত".into()),
         }
     }
 
@@ -1279,7 +1285,7 @@ impl Gen {
     fn lower_expr_bool(&mut self, b: &mut FunctionBuilder, e: &Expr, env: &mut Env) -> Result<Value, String> {
         match self.lower_expr(b, e, env)? {
             CVal::Bool(v) => Ok(v),
-            _ => Err("M2 codegen: শর্ত অবশ্যই 'সত্যতা' টাইপ হতে হবে".into()),
+            _ => Err("M2 codegen: শর্ত অবশ্যই 'বুলিয়ান' টাইপ হতে হবে".into()),
         }
     }
 
@@ -1338,8 +1344,8 @@ impl Gen {
         }
         match (module, item) {
             ("গণিত", "বর্গমূল") => dec1!("kl_math_sqrt"),
-            ("গণিত", "নিম্নমান") => dec1_num!("kl_math_floor"),
-            ("গণিত", "উর্ধ্বমান") => dec1_num!("kl_math_ceil"),
+            ("গণিত", "ফ্লোর") => dec1_num!("kl_math_floor"),
+            ("গণিত", "সিলিং") => dec1_num!("kl_math_ceil"),
             ("গণিত", "রাউন্ডঅফ") => dec1_num!("kl_math_round"),
             ("গণিত", "সাইন") => dec1!("kl_math_sin"),
             ("গণিত", "কোসাইন") => dec1!("kl_math_cos"),
@@ -1379,7 +1385,7 @@ impl Gen {
             ("লেখা", "বড়হাতের") => txt1_txt!("kl_str_upper"),
             ("লেখা", "ছোটহাতের") => txt1_txt!("kl_str_lower"),
             ("লেখা", "ছাঁটো") => txt1_txt!("kl_str_trim"),
-            ("লেখা", "সেপারেট") => {
+            ("লেখা", "স্প্লিট") => {
                 let a = self.lower_expr_txt(b, &args[0], env)?;
                 let sep = self.lower_expr_txt(b, &args[1], env)?;
                 Ok(CVal::Arr(self.call_rt(b, "kl_str_split", &[a, sep]), Box::new(Ty::Txt)))
@@ -1423,13 +1429,17 @@ impl Gen {
                 self.call_rt_void(b, "kl_io_write_file", &[p, c]);
                 Ok(CVal::Void)
             }
-            ("ফাইল", "যোগ") => {
+            ("ফাইল", "এপেন্ড") => {
                 let p = self.lower_expr_txt(b, &args[0], env)?;
                 let c = self.lower_expr_txt(b, &args[1], env)?;
                 self.call_rt_void(b, "kl_io_append_file", &[p, c]);
                 Ok(CVal::Void)
             }
             ("ফাইল", "পড়ো") => txt1_txt!("kl_io_read_file"),
+            ("ফাইল", "লাইন_তালিকা") => {
+                let p = self.lower_expr_txt(b, &args[0], env)?;
+                Ok(CVal::Arr(self.call_rt(b, "kl_io_read_lines", &[p]), Box::new(Ty::Txt)))
+            }
 
             ("র‍্যান্ডম", "বীজ") => {
                 let s = self.lower_expr_num(b, &args[0], env)?;
@@ -1462,6 +1472,11 @@ impl Gen {
                 self.call_rt_void(b, "kl_fs_remove", &[p]);
                 Ok(CVal::Void)
             }
+            ("ফাইলসিস্টেম", "ডিরেক্টরি_মুছো") => {
+                let p = self.lower_expr_txt(b, &args[0], env)?;
+                self.call_rt_void(b, "kl_fs_rmdir_all", &[p]);
+                Ok(CVal::Void)
+            }
             ("ফাইলসিস্টেম", "তালিকা") => {
                 let p = self.lower_expr_txt(b, &args[0], env)?;
                 Ok(CVal::Arr(self.call_rt(b, "kl_fs_list", &[p]), Box::new(Ty::Txt)))
@@ -1472,14 +1487,39 @@ impl Gen {
                 self.call_rt_void(b, "kl_fs_copy", &[s, d]);
                 Ok(CVal::Void)
             }
+            ("ফাইলসিস্টেম", "ডিরেক্টরি_কপি") => {
+                let s = self.lower_expr_txt(b, &args[0], env)?;
+                let d = self.lower_expr_txt(b, &args[1], env)?;
+                self.call_rt_void(b, "kl_fs_copy_dir_all", &[s, d]);
+                Ok(CVal::Void)
+            }
             ("ফাইলসিস্টেম", "সরাও") => {
                 let s = self.lower_expr_txt(b, &args[0], env)?;
                 let d = self.lower_expr_txt(b, &args[1], env)?;
                 self.call_rt_void(b, "kl_fs_rename", &[s, d]);
                 Ok(CVal::Void)
             }
+            ("ফাইলসিস্টেম", "আকার") => {
+                let p = self.lower_expr_txt(b, &args[0], env)?;
+                Ok(CVal::Num(self.call_rt(b, "kl_fs_size", &[p])))
+            }
+            ("ফাইলসিস্টেম", "পরিবর্তনের_সময়") => {
+                let p = self.lower_expr_txt(b, &args[0], env)?;
+                Ok(CVal::Num(self.call_rt(b, "kl_fs_mtime_ms", &[p])))
+            }
+            ("ফাইলসিস্টেম", "বর্তমান_ডিরেক্টরি") => Ok(CVal::Txt(self.call_rt(b, "kl_fs_cwd", &[]))),
 
-            ("জেসন", "বৈধকি") => {
+            ("পাথ", "জোড়ো") => {
+                let a = self.lower_expr_txt(b, &args[0], env)?;
+                let c = self.lower_expr_txt(b, &args[1], env)?;
+                Ok(CVal::Txt(self.call_rt(b, "kl_path_join", &[a, c])))
+            }
+            ("পাথ", "ফাইলনাম") => txt1_txt!("kl_path_basename"),
+            ("পাথ", "ডিরেক্টরিনাম") => txt1_txt!("kl_path_dirname"),
+            ("পাথ", "এক্সটেনশন") => txt1_txt!("kl_path_extension"),
+            ("পাথ", "পরম_পাথ") => txt1_txt!("kl_path_abs"),
+
+            ("জেসন", "বৈধ") => {
                 let t = self.lower_expr_txt(b, &args[0], env)?;
                 Ok(CVal::Bool(self.call_rt(b, "kl_json_valid", &[t])))
             }
@@ -1697,7 +1737,7 @@ impl Gen {
     /// each statement whether anything went wrong, and the handler collects
     /// the message.
     ///
-    /// Known limitation, shared with `ফেরাও`/`বিরতি`/`চলবে` leaving a scope
+    /// Known limitation, shared with `রিটার্ন`/`বিরতি`/`চলবে` leaving a scope
     /// early: values bound in the body before the failure are not decref'd on
     /// the way to the handler. That leaks rather than double-frees, which is
     /// the same trade the rest of this backend already makes.
@@ -2320,7 +2360,7 @@ fn num_binop(b: &mut FunctionBuilder, op: BinOp, a: Value, c: Value) -> Result<C
         BinOp::Gt => CVal::Bool(b.ins().icmp(IntCC::SignedGreaterThan, a, c)),
         BinOp::Le => CVal::Bool(b.ins().icmp(IntCC::SignedLessThanOrEqual, a, c)),
         BinOp::Ge => CVal::Bool(b.ins().icmp(IntCC::SignedGreaterThanOrEqual, a, c)),
-        BinOp::And | BinOp::Or => return Err("M2 codegen: and/or শুধু 'সত্যতা'-এ প্রযোজ্য".into()),
+        BinOp::And | BinOp::Or => return Err("M2 codegen: and/or শুধু 'বুলিয়ান'-এ প্রযোজ্য".into()),
     })
 }
 
@@ -2337,7 +2377,7 @@ fn dec_binop(b: &mut FunctionBuilder, op: BinOp, a: Value, c: Value) -> Result<C
         BinOp::Le => CVal::Bool(b.ins().fcmp(FloatCC::LessThanOrEqual, a, c)),
         BinOp::Ge => CVal::Bool(b.ins().fcmp(FloatCC::GreaterThanOrEqual, a, c)),
         BinOp::Mod => return Err("M2 codegen: দশমিকের mod এখনো সমর্থিত নয়".into()),
-        BinOp::And | BinOp::Or => return Err("M2 codegen: and/or শুধু 'সত্যতা'-এ প্রযোজ্য".into()),
+        BinOp::And | BinOp::Or => return Err("M2 codegen: and/or শুধু 'বুলিয়ান'-এ প্রযোজ্য".into()),
     })
 }
 
@@ -2348,7 +2388,7 @@ fn bool_binop(b: &mut FunctionBuilder, op: BinOp, a: Value, c: Value) -> Result<
         // TODO(M3+): short-circuit evaluation.
         BinOp::And => CVal::Bool(b.ins().band(a, c)),
         BinOp::Or => CVal::Bool(b.ins().bor(a, c)),
-        _ => return Err("M2 codegen: এই অপারেটর 'সত্যতা'-এ প্রযোজ্য নয়".into()),
+        _ => return Err("M2 codegen: এই অপারেটর 'বুলিয়ান'-এ প্রযোজ্য নয়".into()),
     })
 }
 
@@ -2454,13 +2494,25 @@ pub fn emit_for(prog: &Program, target: crate::link::Target) -> Result<Vec<u8>, 
         ("kl_io_append_file", &[ptr_ty, ptr_ty], &[]),
         ("kl_io_read_file", &[ptr_ty], &[ptr_ty]),
         ("kl_io_read_line", &[], &[ptr_ty]),
+        ("kl_io_read_lines", &[ptr_ty], &[ptr_ty]),
         ("kl_fs_exists", &[ptr_ty], &[i8t]),
         ("kl_fs_dir_exists", &[ptr_ty], &[i8t]),
         ("kl_fs_mkdir", &[ptr_ty], &[]),
         ("kl_fs_remove", &[ptr_ty], &[]),
+        ("kl_fs_rmdir_all", &[ptr_ty], &[]),
         ("kl_fs_copy", &[ptr_ty, ptr_ty], &[]),
+        ("kl_fs_copy_dir_all", &[ptr_ty, ptr_ty], &[]),
         ("kl_fs_rename", &[ptr_ty, ptr_ty], &[]),
         ("kl_fs_list", &[ptr_ty], &[ptr_ty]),
+        ("kl_fs_size", &[ptr_ty], &[i64t]),
+        ("kl_fs_mtime_ms", &[ptr_ty], &[i64t]),
+        ("kl_fs_cwd", &[], &[ptr_ty]),
+        // পাথ
+        ("kl_path_join", &[ptr_ty, ptr_ty], &[ptr_ty]),
+        ("kl_path_basename", &[ptr_ty], &[ptr_ty]),
+        ("kl_path_dirname", &[ptr_ty], &[ptr_ty]),
+        ("kl_path_extension", &[ptr_ty], &[ptr_ty]),
+        ("kl_path_abs", &[ptr_ty], &[ptr_ty]),
         // র‍্যান্ডম
         ("kl_rand_seed", &[i64t], &[]),
         ("kl_rand_num", &[], &[i64t]),

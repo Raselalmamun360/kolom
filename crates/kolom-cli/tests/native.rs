@@ -64,6 +64,7 @@ fn native_codegen_parity() {
         "25_stdlib_fs",
         "26_stdlib_json",
         "28_user_module",
+        "42_stdlib_path",
     ];
 
     let mut failures: Vec<String> = Vec::new();

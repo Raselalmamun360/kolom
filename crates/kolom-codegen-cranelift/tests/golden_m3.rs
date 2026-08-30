@@ -51,6 +51,16 @@ fn golden_25_stdlib_fs() {
     assert_matches_reference_with("25_stdlib_fs", &[], true);
 }
 
+#[test]
+fn golden_41_stdlib_fs2() {
+    assert_matches_reference_with("41_stdlib_fs2", &[], true);
+}
+
+#[test]
+fn golden_42_stdlib_path() {
+    assert_matches_reference("42_stdlib_path");
+}
+
 /// র‍্যান্ডম is the one fixture that cannot use the shared reference: this
 /// backend's PRNG deliberately does not reproduce the interpreter's exact
 /// sequence. Its contract is the range, so that is what gets asserted.

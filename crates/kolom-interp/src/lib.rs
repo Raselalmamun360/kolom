@@ -149,7 +149,7 @@ pub fn run(prog: &Program, out: &mut dyn Write) -> Result<(), InterpError> {
     let cf = it.exec_block(&app.body)?;
     it.scopes.pop();
     match cf {
-        CF::Ret(_) => Err(err(Pos { line: 1, col: 1 }, "ফাংশনের বাইরে 'ফেরাও'")),
+        CF::Ret(_) => Err(err(Pos { line: 1, col: 1 }, "ফাংশনের বাইরে 'রিটার্ন'")),
         _ => Ok(()),
     }
 }
@@ -228,7 +228,7 @@ impl<'o> Interp<'o> {
                     _ => {
                         return Err(err(
                             i.pos,
-                            "'যদি'-এর শর্ত 'সত্যতা' টাইপের হতে হবে",
+                            "'যদি'-এর শর্ত 'বুলিয়ান' টাইপের হতে হবে",
                         ))
                     }
                 };
@@ -275,7 +275,7 @@ impl<'o> Interp<'o> {
                         _ => {
                             return Err(err(
                                 w.pos,
-                                "'যতক্ষণ'-এর শর্ত 'সত্যতা' টাইপের হতে হবে",
+                                "'যতক্ষণ'-এর শর্ত 'বুলিয়ান' টাইপের হতে হবে",
                             ))
                         }
                     }
@@ -428,7 +428,7 @@ impl<'o> Interp<'o> {
                         Value::Bool(b) => Ok(Value::Bool(!b)),
                         _ => Err(err(
                             e.pos,
-                            "'না'-এর অপারেন্ড 'সত্যতা' টাইপের হতে হবে",
+                            "'না'-এর অপারেন্ড 'বুলিয়ান' টাইপের হতে হবে",
                         )),
                     },
                 }
@@ -441,7 +441,7 @@ impl<'o> Interp<'o> {
                         _ => {
                             return Err(err(
                                 e.pos,
-                                "লজিক্যাল অপারেটরের অপারেন্ড 'সত্যতা' টাইপের হতে হবে",
+                                "লজিক্যাল অপারেটরের অপারেন্ড 'বুলিয়ান' টাইপের হতে হবে",
                             ))
                         }
                     };
@@ -456,7 +456,7 @@ impl<'o> Interp<'o> {
                         Value::Bool(b) => Ok(Value::Bool(b)),
                         _ => Err(err(
                             e.pos,
-                            "লজিক্যাল অপারেটরের অপারেন্ড 'সত্যতা' টাইপের হতে হবে",
+                            "লজিক্যাল অপারেটরের অপারেন্ড 'বুলিয়ান' টাইপের হতে হবে",
                         )),
                     };
                 }
@@ -477,7 +477,7 @@ impl<'o> Interp<'o> {
                         m.borrow_mut().insert(field.name.clone(), v);
                         Ok(Value::Null)
                     }
-                    Some(_) => Err(err(base.pos, format!("'{}' ডাটা নয়", name))),
+                    Some(_) => Err(err(base.pos, format!("'{}' তথ্য নয়", name))),
                     None => Err(err(base.pos, format!("অঘোষিত ভ্যারিয়েবল '{}'", name))),
                 }
             }
@@ -675,7 +675,7 @@ impl<'o> Interp<'o> {
                 Some(_) => {
                     return Err(err(
                         target.base.pos,
-                        format!("'{}' ডাটা নয়", name),
+                        format!("'{}' তথ্য নয়", name),
                     ))
                 }
                 None => {
@@ -812,8 +812,8 @@ impl<'o> Interp<'o> {
                 }
             }
             ("গণিত", "ঘাত", [a, b]) => Ok(Value::Dec(num_f(a)?.powf(num_f(b)?))),
-            ("গণিত", "নিম্নমান", [v]) => Ok(Value::Num(num_f(v)?.floor() as i64)),
-            ("গণিত", "উর্ধ্বমান", [v]) => Ok(Value::Num(num_f(v)?.ceil() as i64)),
+            ("গণিত", "ফ্লোর", [v]) => Ok(Value::Num(num_f(v)?.floor() as i64)),
+            ("গণিত", "সিলিং", [v]) => Ok(Value::Num(num_f(v)?.ceil() as i64)),
             ("গণিত", "রাউন্ডঅফ", [v]) => Ok(Value::Num(num_f(v)?.round() as i64)),
             ("গণিত", "সাইন", [v]) => Ok(Value::Dec(num_f(v)?.sin())),
             ("গণিত", "কোসাইন", [v]) => Ok(Value::Dec(num_f(v)?.cos())),
@@ -843,7 +843,7 @@ impl<'o> Interp<'o> {
                 s.chars().map(|c| c.to_ascii_lowercase()).collect(),
             )),
             ("লেখা", "ছাঁটো", [Value::Txt(s)]) => Ok(Value::Txt(s.trim().to_string())),
-            ("লেখা", "সেপারেট", [Value::Txt(s), Value::Txt(sep)]) => {
+            ("লেখা", "স্প্লিট", [Value::Txt(s), Value::Txt(sep)]) => {
                 if sep.is_empty() {
                     return Err(err(pos, "খালি বিভাজক দেওয়া যাবে না"));
                 }
@@ -908,7 +908,7 @@ impl<'o> Interp<'o> {
                     Err(e) => Err(err(pos, format!("ফাইল লেখা যায়নি '{}': {}", path, e))),
                 }
             }
-            ("ফাইল", "যোগ", [Value::Txt(path), Value::Txt(content)]) => {
+            ("ফাইল", "এপেন্ড", [Value::Txt(path), Value::Txt(content)]) => {
                 use std::io::Write as _;
                 match std::fs::OpenOptions::new()
                     .create(true)
@@ -917,9 +917,16 @@ impl<'o> Interp<'o> {
                     .and_then(|mut f| f.write_all(content.as_bytes()))
                 {
                     Ok(()) => Ok(Value::Null),
-                    Err(e) => Err(err(pos, format!("ফাইলে যোগ করা যায়নি '{}': {}", path, e))),
+                    Err(e) => Err(err(pos, format!("ফাইলে এপেন্ড করা যায়নি '{}': {}", path, e))),
                 }
             }
+            ("ফাইল", "লাইন_তালিকা", [Value::Txt(path)]) => match std::fs::read_to_string(path) {
+                Ok(content) => {
+                    let lines: Vec<Value> = content.lines().map(|l| Value::Txt(l.to_string())).collect();
+                    Ok(Value::Arr(Rc::new(RefCell::new(lines))))
+                }
+                Err(e) => Err(err(pos, format!("ফাইল পড়া যায়নি '{}': {}", path, e))),
+            },
 
             // সময়
             ("সময়", "এখন_মিলিসেকেন্ড", []) => {
@@ -929,7 +936,7 @@ impl<'o> Interp<'o> {
                     .unwrap_or(0);
                 Ok(Value::Num(ms))
             }
-            ("সময়", "ঘড়ি", []) => Ok(Value::Dec(
+            ("সময়", "সেকেন্ড", []) => Ok(Value::Dec(
                 std::time::SystemTime::now()
                     .duration_since(std::time::UNIX_EPOCH)
                     .map(|d| d.as_secs_f64())
@@ -970,6 +977,10 @@ impl<'o> Interp<'o> {
                 Ok(()) => Ok(Value::Null),
                 Err(e) => Err(err(pos, format!("মুছতে ব্যর্থ '{}': {}", p, e))),
             },
+            ("ফাইলসিস্টেম", "ডিরেক্টরি_মুছো", [Value::Txt(p)]) => match std::fs::remove_dir_all(p) {
+                Ok(()) => Ok(Value::Null),
+                Err(e) => Err(err(pos, format!("ডিরেক্টরি মুছতে ব্যর্থ '{}': {}", p, e))),
+            },
             ("ফাইলসিস্টেম", "তালিকা", [Value::Txt(p)]) => {
                 let mut names: Vec<Value> = Vec::new();
                 match std::fs::read_dir(p) {
@@ -988,15 +999,62 @@ impl<'o> Interp<'o> {
                     Err(e) => Err(err(pos, format!("কপি ব্যর্থ '{}'-('{}'): {}", a, b, e))),
                 }
             }
+            ("ফাইলসিস্টেম", "ডিরেক্টরি_কপি", [Value::Txt(a), Value::Txt(b)]) => {
+                match copy_dir_recursive(std::path::Path::new(a), std::path::Path::new(b)) {
+                    Ok(()) => Ok(Value::Null),
+                    Err(e) => Err(err(pos, format!("ডিরেক্টরি কপি ব্যর্থ '{}'-('{}'): {}", a, b, e))),
+                }
+            }
             ("ফাইলসিস্টেম", "সরাও", [Value::Txt(a), Value::Txt(b)]) => {
                 match std::fs::rename(a, b) {
                     Ok(()) => Ok(Value::Null),
                     Err(e) => Err(err(pos, format!("সরানো ব্যর্থ '{}'-('{}'): {}", a, b, e))),
                 }
             }
+            ("ফাইলসিস্টেম", "আকার", [Value::Txt(p)]) => match std::fs::metadata(p) {
+                Ok(m) => Ok(Value::Num(m.len() as i64)),
+                Err(e) => Err(err(pos, format!("আকার পড়া যায়নি '{}': {}", p, e))),
+            },
+            ("ফাইলসিস্টেম", "পরিবর্তনের_সময়", [Value::Txt(p)]) => match std::fs::metadata(p).and_then(|m| m.modified()) {
+                Ok(t) => {
+                    let ms = t
+                        .duration_since(std::time::UNIX_EPOCH)
+                        .map(|d| d.as_millis() as i64)
+                        .unwrap_or(0);
+                    Ok(Value::Num(ms))
+                }
+                Err(e) => Err(err(pos, format!("পরিবর্তনের সময় পড়া যায়নি '{}': {}", p, e))),
+            },
+            ("ফাইলসিস্টেম", "বর্তমান_ডিরেক্টরি", []) => match std::env::current_dir() {
+                Ok(p) => Ok(Value::Txt(p.to_string_lossy().into_owned())),
+                Err(e) => Err(err(pos, format!("বর্তমান ডিরেক্টরি পড়া যায়নি: {}", e))),
+            },
+
+            // পাথ — লেক্সিক্যাল পাথ ম্যানিপুলেশন, ডিস্কে কিছু ছোঁয় না
+            ("পাথ", "জোড়ো", [Value::Txt(a), Value::Txt(b)]) => {
+                Ok(Value::Txt(std::path::Path::new(a).join(b).to_string_lossy().into_owned()))
+            }
+            ("পাথ", "ফাইলনাম", [Value::Txt(p)]) => Ok(Value::Txt(
+                std::path::Path::new(p).file_name().map(|n| n.to_string_lossy().into_owned()).unwrap_or_default(),
+            )),
+            ("পাথ", "ডিরেক্টরিনাম", [Value::Txt(p)]) => Ok(Value::Txt(
+                std::path::Path::new(p).parent().map(|n| n.to_string_lossy().into_owned()).unwrap_or_default(),
+            )),
+            ("পাথ", "এক্সটেনশন", [Value::Txt(p)]) => Ok(Value::Txt(
+                std::path::Path::new(p).extension().map(|e| e.to_string_lossy().into_owned()).unwrap_or_default(),
+            )),
+            ("পাথ", "পরম_পাথ", [Value::Txt(p)]) => {
+                let path = std::path::Path::new(p);
+                let abs = if path.is_absolute() {
+                    path.to_path_buf()
+                } else {
+                    std::env::current_dir().unwrap_or_default().join(path)
+                };
+                Ok(Value::Txt(abs.to_string_lossy().into_owned()))
+            }
 
             // জেসন
-            ("জেসন", "বৈধকি", [Value::Txt(t)]) => Ok(Value::Bool(json_valid(t))),
+            ("জেসন", "বৈধ", [Value::Txt(t)]) => Ok(Value::Bool(json_valid(t))),
             ("জেসন", "বের_হও", [Value::Txt(s)]) => Ok(Value::Txt(json_escape(s))),
             ("জেসন", "লেখা_বের_করো", [Value::Txt(t), Value::Txt(key)]) => {
                 Ok(Value::Txt(json_string_field(t, key).unwrap_or_default()))
@@ -1411,6 +1469,20 @@ impl<'a> JsonP<'a> {
         }
         self.i > start
     }
+}
+
+fn copy_dir_recursive(src: &std::path::Path, dst: &std::path::Path) -> std::io::Result<()> {
+    std::fs::create_dir_all(dst)?;
+    for entry in std::fs::read_dir(src)? {
+        let entry = entry?;
+        let dst_path = dst.join(entry.file_name());
+        if entry.file_type()?.is_dir() {
+            copy_dir_recursive(&entry.path(), &dst_path)?;
+        } else {
+            std::fs::copy(entry.path(), dst_path)?;
+        }
+    }
+    Ok(())
 }
 
 fn json_valid(text: &str) -> bool {

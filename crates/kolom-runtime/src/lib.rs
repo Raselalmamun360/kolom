@@ -643,8 +643,29 @@ pub extern "C" fn kl_io_append_file(path: *mut u8, content: *mut u8) {
     let c = unsafe { str_slice(content) };
     let res = std::fs::OpenOptions::new().create(true).append(true).open(&p).and_then(|mut f| f.write_all(c));
     if let Err(e) = res {
-        fail(format!("ফাইলে যোগ করা যায়নি '{}': {}", p, e));
+        fail(format!("ফাইলে এপেন্ড করা যায়নি '{}': {}", p, e));
     }
+}
+
+/// Same `kl_arr<kl_str>`-building pattern as `kl_fs_list` below, but of
+/// content lines rather than directory entries.
+#[no_mangle]
+pub extern "C" fn kl_io_read_lines(path: *mut u8) -> *mut u8 {
+    let p = String::from_utf8_lossy(unsafe { str_slice(path) }).into_owned();
+    let lines: Vec<String> = match std::fs::read_to_string(&p) {
+        Ok(content) => content.lines().map(|l| l.to_string()).collect(),
+        Err(e) => {
+            fail(format!("ফাইল পড়া যায়নি '{}': {}", p, e));
+            Vec::new()
+        }
+    };
+    let drop_addr = kl_str_decref as *const () as usize as i64;
+    let arr = kl_arr_new(8, lines.len() as i64, drop_addr);
+    for l in &lines {
+        let s = str_from_rust(l);
+        kl_arr_push(arr, (&s as *const *mut u8) as *const u8);
+    }
+    arr
 }
 
 #[no_mangle]
@@ -697,13 +718,23 @@ pub extern "C" fn kl_fs_mkdir(path: *mut u8) {
     }
 }
 
+/// File-only — errors on a directory rather than silently recursing, so
+/// `ফাইলসিস্টেম.মুছো` behaves identically to the interpreter and can't
+/// surprise-delete a whole tree. Recursive delete is `kl_fs_rmdir_all`
+/// (`ডিরেক্টরি_মুছো`), its own explicit, opt-in name.
 #[no_mangle]
 pub extern "C" fn kl_fs_remove(path: *mut u8) {
     let p = String::from_utf8_lossy(unsafe { str_slice(path) }).into_owned();
-    let path_ref = std::path::Path::new(&p);
-    let res = if path_ref.is_dir() { std::fs::remove_dir_all(path_ref) } else { std::fs::remove_file(path_ref) };
-    if let Err(e) = res {
+    if let Err(e) = std::fs::remove_file(&p) {
         fail(format!("মোছা যায়নি '{}': {}", p, e));
+    }
+}
+
+#[no_mangle]
+pub extern "C" fn kl_fs_rmdir_all(path: *mut u8) {
+    let p = String::from_utf8_lossy(unsafe { str_slice(path) }).into_owned();
+    if let Err(e) = std::fs::remove_dir_all(&p) {
+        fail(format!("ডিরেক্টরি মুছতে ব্যর্থ '{}': {}", p, e));
     }
 }
 
@@ -716,12 +747,70 @@ pub extern "C" fn kl_fs_copy(src: *mut u8, dst: *mut u8) {
     }
 }
 
+fn copy_dir_recursive(src: &std::path::Path, dst: &std::path::Path) -> std::io::Result<()> {
+    std::fs::create_dir_all(dst)?;
+    for entry in std::fs::read_dir(src)? {
+        let entry = entry?;
+        let dst_path = dst.join(entry.file_name());
+        if entry.file_type()?.is_dir() {
+            copy_dir_recursive(&entry.path(), &dst_path)?;
+        } else {
+            std::fs::copy(entry.path(), dst_path)?;
+        }
+    }
+    Ok(())
+}
+
+#[no_mangle]
+pub extern "C" fn kl_fs_copy_dir_all(src: *mut u8, dst: *mut u8) {
+    let s = String::from_utf8_lossy(unsafe { str_slice(src) }).into_owned();
+    let d = String::from_utf8_lossy(unsafe { str_slice(dst) }).into_owned();
+    if let Err(e) = copy_dir_recursive(std::path::Path::new(&s), std::path::Path::new(&d)) {
+        fail(format!("ডিরেক্টরি কপি ব্যর্থ '{}' -> '{}': {}", s, d, e));
+    }
+}
+
 #[no_mangle]
 pub extern "C" fn kl_fs_rename(src: *mut u8, dst: *mut u8) {
     let s = String::from_utf8_lossy(unsafe { str_slice(src) }).into_owned();
     let d = String::from_utf8_lossy(unsafe { str_slice(dst) }).into_owned();
     if let Err(e) = std::fs::rename(&s, &d) {
         fail(format!("সরানো যায়নি '{}' -> '{}': {}", s, d, e));
+    }
+}
+
+#[no_mangle]
+pub extern "C" fn kl_fs_size(path: *mut u8) -> i64 {
+    let p = String::from_utf8_lossy(unsafe { str_slice(path) }).into_owned();
+    match std::fs::metadata(&p) {
+        Ok(m) => m.len() as i64,
+        Err(e) => {
+            fail(format!("আকার পড়া যায়নি '{}': {}", p, e));
+            0
+        }
+    }
+}
+
+#[no_mangle]
+pub extern "C" fn kl_fs_mtime_ms(path: *mut u8) -> i64 {
+    let p = String::from_utf8_lossy(unsafe { str_slice(path) }).into_owned();
+    match std::fs::metadata(&p).and_then(|m| m.modified()) {
+        Ok(t) => t.duration_since(std::time::UNIX_EPOCH).map(|d| d.as_millis() as i64).unwrap_or(0),
+        Err(e) => {
+            fail(format!("পরিবর্তনের সময় পড়া যায়নি '{}': {}", p, e));
+            0
+        }
+    }
+}
+
+#[no_mangle]
+pub extern "C" fn kl_fs_cwd() -> *mut u8 {
+    match std::env::current_dir() {
+        Ok(p) => str_from_rust(&p.to_string_lossy()),
+        Err(e) => {
+            fail(format!("বর্তমান ডিরেক্টরি পড়া যায়নি: {}", e));
+            str_from_rust("")
+        }
     }
 }
 
@@ -744,6 +833,52 @@ pub extern "C" fn kl_fs_list(path: *mut u8) -> *mut u8 {
         kl_arr_push(arr, (&s as *const *mut u8) as *const u8);
     }
     arr
+}
+
+// ============================================================================
+// পাথ — লেক্সিক্যাল পাথ ম্যানিপুলেশন, ডিস্কে কিছু ছোঁয় না, তাই ইনফ্যালিবল
+// (ব্যর্থ হওয়ার কিছু নেই — খারাপ ইনপুটে ফাঁকা/best-effort ফল দেয়)
+// ============================================================================
+
+#[no_mangle]
+pub extern "C" fn kl_path_join(a: *mut u8, b: *mut u8) -> *mut u8 {
+    let a = String::from_utf8_lossy(unsafe { str_slice(a) }).into_owned();
+    let b = String::from_utf8_lossy(unsafe { str_slice(b) }).into_owned();
+    str_from_rust(&std::path::Path::new(&a).join(&b).to_string_lossy())
+}
+
+#[no_mangle]
+pub extern "C" fn kl_path_basename(path: *mut u8) -> *mut u8 {
+    let p = String::from_utf8_lossy(unsafe { str_slice(path) }).into_owned();
+    let name = std::path::Path::new(&p).file_name().map(|n| n.to_string_lossy().into_owned()).unwrap_or_default();
+    str_from_rust(&name)
+}
+
+#[no_mangle]
+pub extern "C" fn kl_path_dirname(path: *mut u8) -> *mut u8 {
+    let p = String::from_utf8_lossy(unsafe { str_slice(path) }).into_owned();
+    let dir = std::path::Path::new(&p).parent().map(|n| n.to_string_lossy().into_owned()).unwrap_or_default();
+    str_from_rust(&dir)
+}
+
+#[no_mangle]
+pub extern "C" fn kl_path_extension(path: *mut u8) -> *mut u8 {
+    let p = String::from_utf8_lossy(unsafe { str_slice(path) }).into_owned();
+    let ext = std::path::Path::new(&p).extension().map(|e| e.to_string_lossy().into_owned()).unwrap_or_default();
+    str_from_rust(&ext)
+}
+
+/// Lexical, not `std::fs::canonicalize` — the latter requires the path to
+/// exist and, on Windows, returns a `\\?\`-prefixed extended-length path
+/// (hit and worked around this exact footgun elsewhere in this project's
+/// tooling this session) — wrong for a general "make this absolute" utility
+/// that should work on paths that don't exist yet.
+#[no_mangle]
+pub extern "C" fn kl_path_abs(path: *mut u8) -> *mut u8 {
+    let p = String::from_utf8_lossy(unsafe { str_slice(path) }).into_owned();
+    let path = std::path::Path::new(&p);
+    let abs = if path.is_absolute() { path.to_path_buf() } else { std::env::current_dir().unwrap_or_default().join(path) };
+    str_from_rust(&abs.to_string_lossy())
 }
 
 // ============================================================================

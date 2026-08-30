@@ -4,7 +4,7 @@
 //! Until this landed, `চেষ্টা` was the one statement the Cranelift backend
 //! could not lower at all: `কলম চালাও` ran these programs and `কলম বিল্ড`
 //! refused them. The interesting cases are less about catching an error than
-//! about the ways control leaves a `চেষ্টা` block — a `ফেরাও` from inside
+//! about the ways control leaves a `চেষ্টা` block — a `রিটার্ন` from inside
 //! one, a `বিরতি` out of one and into an enclosing loop — because each has to
 //! tell the runtime the block is closing.
 
@@ -23,7 +23,7 @@ fn golden_31_try_catch() {
     assert_matches_reference_with("31_try_catch", &[], true);
 }
 
-/// Nested blocks, `ফেরাও` from inside one, and `বিরতি` leaving one to break
+/// Nested blocks, `রিটার্ন` from inside one, and `বিরতি` leaving one to break
 /// an enclosing loop.
 #[test]
 fn golden_35_try_nested() {

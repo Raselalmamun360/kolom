@@ -3,7 +3,7 @@
 //! This exists because the docs had drifted badly from the language twice
 //! over. The last audit found nine broken programs in `tutorial.md` alone:
 //! structs declared with a keyword that was never implemented (`গঠন` rather
-//! than `ডাটা`), parameters written `name: type` when Kolom wants
+//! than `তথ্য`), parameters written `name: type` when Kolom wants
 //! `type name`, a map helper under a name that does not exist, an
 //! `ইম্পোর্ট` inside `অ্যাপ`, a module function called with a prefix it
 //! cannot have, `গণিত` float functions handed whole numbers, and two

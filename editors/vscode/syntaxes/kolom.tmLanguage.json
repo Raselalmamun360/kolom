@@ -70,12 +70,12 @@
         {
           "comment": "declarations",
           "name": "keyword.other.declaration.kolom",
-          "match": "(?<![\\p{L}\\p{Mn}\\p{Mc}\\p{Nd}_])(অ্যাপ|ফাংশন|ধরি|ধ্রুবক|ডাটা|ইম্পোর্ট)(?![\\p{L}\\p{Mn}\\p{Mc}\\p{Nd}_])"
+          "match": "(?<![\\p{L}\\p{Mn}\\p{Mc}\\p{Nd}_])(অ্যাপ|ফাংশন|ধরি|ধ্রুবক|তথ্য|ইম্পোর্ট)(?![\\p{L}\\p{Mn}\\p{Mc}\\p{Nd}_])"
         },
         {
           "comment": "control flow",
           "name": "keyword.control.kolom",
-          "match": "(?<![\\p{L}\\p{Mn}\\p{Mc}\\p{Nd}_])(যদি|নাহলে|লুপ|যতক্ষণ|প্রতি|ফেরাও|বিরতি|চলবে|চেষ্টা|ধরো)(?![\\p{L}\\p{Mn}\\p{Mc}\\p{Nd}_])"
+          "match": "(?<![\\p{L}\\p{Mn}\\p{Mc}\\p{Nd}_])(যদি|নাহলে|লুপ|যতক্ষণ|প্রতি|রিটার্ন|বিরতি|চলবে|চেষ্টা|ধরো)(?![\\p{L}\\p{Mn}\\p{Mc}\\p{Nd}_])"
         },
         {
           "comment": "logical operators spelled as words rather than symbols",
@@ -96,7 +96,7 @@
     },
     "types": {
       "name": "storage.type.kolom",
-      "match": "(?<![\\p{L}\\p{Mn}\\p{Mc}\\p{Nd}_])(সংখ্যা|দশমিক|লেখা|সত্যতা|অক্ষর|ম্যাপ|ফাঁকা)(?![\\p{L}\\p{Mn}\\p{Mc}\\p{Nd}_])"
+      "match": "(?<![\\p{L}\\p{Mn}\\p{Mc}\\p{Nd}_])(সংখ্যা|দশমিক|লেখা|বুলিয়ান|অক্ষর|ম্যাপ|ফাঁকা)(?![\\p{L}\\p{Mn}\\p{Mc}\\p{Nd}_])"
     },
     "constants": {
       "patterns": [
@@ -114,8 +114,8 @@
       }
     },
     "struct-declaration": {
-      "comment": "the name right after ডাটা",
-      "match": "(?<=ডাটা\\s)\\s*([\\p{L}_][\\p{L}\\p{Mn}\\p{Mc}\\p{Nd}_]*)",
+      "comment": "the name right after তথ্য",
+      "match": "(?<=তথ্য\\s)\\s*([\\p{L}_][\\p{L}\\p{Mn}\\p{Mc}\\p{Nd}_]*)",
       "captures": {
         "1": { "name": "entity.name.type.kolom" }
       }

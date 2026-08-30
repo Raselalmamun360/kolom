@@ -19,6 +19,7 @@ pub const STDLIB_MODULES: &[&str] = &[
     "সময়",
     "র‍্যান্ডম",
     "ফাইলসিস্টেম",
+    "পাথ",
     "জেসন",
     "নেটওয়ার্ক",
     "গ্রাফিক্স",
@@ -37,8 +38,8 @@ pub fn stdlib_lookup(module: &str, item: &str) -> Option<StdSig> {
         ("গণিত", "ই") => Const(d()),
         ("গণিত", "বর্গমূল") => Fn(vec![d()], d()),
         ("গণিত", "ঘাত") => Fn(vec![d(), d()], d()),
-        ("গণিত", "নিম্নমান") => Fn(vec![d()], i()),
-        ("গণিত", "উর্ধ্বমান") => Fn(vec![d()], i()),
+        ("গণিত", "ফ্লোর") => Fn(vec![d()], i()),
+        ("গণিত", "সিলিং") => Fn(vec![d()], i()),
         ("গণিত", "রাউন্ডঅফ") => Fn(vec![d()], i()),
         ("গণিত", "সাইন") => Fn(vec![d()], d()),
         ("গণিত", "কোসাইন") => Fn(vec![d()], d()),
@@ -60,7 +61,7 @@ pub fn stdlib_lookup(module: &str, item: &str) -> Option<StdSig> {
         ("লেখা", "বড়হাতের") => Fn(vec![s()], s()),
         ("লেখা", "ছোটহাতের") => Fn(vec![s()], s()),
         ("লেখা", "ছাঁটো") => Fn(vec![s()], s()),
-        ("লেখা", "সেপারেট") => Fn(vec![s(), s()], sa()),
+        ("লেখা", "স্প্লিট") => Fn(vec![s(), s()], sa()),
         ("লেখা", "জুড়াও") => Fn(vec![sa(), s()], s()),
         ("লেখা", "বদলাও") => Fn(vec![s(), s(), s()], s()),
         ("লেখা", "খুঁজো") => Fn(vec![s(), s()], i()),
@@ -70,10 +71,15 @@ pub fn stdlib_lookup(module: &str, item: &str) -> Option<StdSig> {
 
         ("ফাইল", "পড়ো") => Fn(vec![s()], s()),
         ("ফাইল", "লেখো") => Fn(vec![s(), s()], n()),
-        ("ফাইল", "যোগ") => Fn(vec![s(), s()], n()),
+        // আগে `যোগ` নামে ছিল — docs জুড়ে "দুই সংখ্যা যোগ করা"-র উদাহরণ
+        // ফাংশনের নামও `যোগ`, তাই বিভ্রান্তিকর ছিল যোগ-করা-র সাথে কোনো
+        // সম্পর্ক না থাকা সত্ত্বেও। রানটাইম সিম্বল (`kl_io_append_file`)
+        // অপরিবর্তিত — শুধু এই ম্যাচ-আর্মের লিটারেল বদলেছে।
+        ("ফাইল", "এপেন্ড") => Fn(vec![s(), s()], n()),
+        ("ফাইল", "লাইন_তালিকা") => Fn(vec![s()], sa()),
 
         ("সময়", "এখন_মিলিসেকেন্ড") => Fn(vec![], i()),
-        ("সময়", "ঘড়ি") => Fn(vec![], d()),
+        ("সময়", "সেকেন্ড") => Fn(vec![], d()),
 
         ("র‍্যান্ডম", "বীজ") => Fn(vec![i()], n()),
         ("র‍্যান্ডম", "সংখ্যা") => Fn(vec![], i()),
@@ -83,12 +89,26 @@ pub fn stdlib_lookup(module: &str, item: &str) -> Option<StdSig> {
         ("ফাইলসিস্টেম", "ফাইল_আছে") => Fn(vec![s()], b()),
         ("ফাইলসিস্টেম", "ডিরেক্টরি_আছে") => Fn(vec![s()], b()),
         ("ফাইলসিস্টেম", "ডিরেক্টরি_বানাও") => Fn(vec![s()], n()),
+        // ফাইল-শুধু (ডিরেক্টরির উপর ব্যর্থ হয়) — রিকার্সিভ ডিলিটের জন্য
+        // আলাদা, স্পষ্ট নাম `ডিরেক্টরি_মুছো` (নিচে), যাতে ভুলে গোটা ট্রি
+        // মুছে না যায়।
         ("ফাইলসিস্টেম", "মুছো") => Fn(vec![s()], n()),
+        ("ফাইলসিস্টেম", "ডিরেক্টরি_মুছো") => Fn(vec![s()], n()),
         ("ফাইলসিস্টেম", "তালিকা") => Fn(vec![s()], sa()),
         ("ফাইলসিস্টেম", "কপি") => Fn(vec![s(), s()], n()),
+        ("ফাইলসিস্টেম", "ডিরেক্টরি_কপি") => Fn(vec![s(), s()], n()),
         ("ফাইলসিস্টেম", "সরাও") => Fn(vec![s(), s()], n()),
+        ("ফাইলসিস্টেম", "আকার") => Fn(vec![s()], i()),
+        ("ফাইলসিস্টেম", "পরিবর্তনের_সময়") => Fn(vec![s()], i()),
+        ("ফাইলসিস্টেম", "বর্তমান_ডিরেক্টরি") => Fn(vec![], s()),
 
-        ("জেসন", "বৈধকি") => Fn(vec![s()], b()),
+        ("পাথ", "জোড়ো") => Fn(vec![s(), s()], s()),
+        ("পাথ", "ফাইলনাম") => Fn(vec![s()], s()),
+        ("পাথ", "ডিরেক্টরিনাম") => Fn(vec![s()], s()),
+        ("পাথ", "এক্সটেনশন") => Fn(vec![s()], s()),
+        ("পাথ", "পরম_পাথ") => Fn(vec![s()], s()),
+
+        ("জেসন", "বৈধ") => Fn(vec![s()], b()),
         ("জেসন", "বের_হও") => Fn(vec![s()], s()),
         ("জেসন", "লেখা_বের_করো") => Fn(vec![s(), s()], s()),
         ("জেসন", "সংখ্যা_বের_করো") => Fn(vec![s(), s()], i()),
@@ -138,7 +158,7 @@ impl std::fmt::Display for Ty {
             Ty::Num => write!(f, "সংখ্যা"),
             Ty::Dec => write!(f, "দশমিক"),
             Ty::Txt => write!(f, "লেখা"),
-            Ty::Bool => write!(f, "সত্যতা"),
+            Ty::Bool => write!(f, "বুলিয়ান"),
             Ty::Ch => write!(f, "অক্ষর"),
             Ty::Null => write!(f, "ফাঁকা"),
             Ty::Arr(t) => write!(f, "{}[]", t),
@@ -208,7 +228,7 @@ struct Ck {
     types: Types,
     imports: std::collections::HashSet<String>,
     structs: HashMap<String, Vec<(String, Ty)>>,
-    /// Names of all declared `ডাটা` types, collected before any field type
+    /// Names of all declared `তথ্য` types, collected before any field type
     /// is resolved so a struct may reference one declared later in the file.
     struct_names: std::collections::HashSet<String>,
     /// Imports that name one of the user's own `.ক` files rather than a
@@ -331,7 +351,7 @@ impl Ck {
                 "সংখ্যা" => Ty::Num,
                 "দশমিক" => Ty::Dec,
                 "লেখা" => Ty::Txt,
-                "সত্যতা" => Ty::Bool,
+                "বুলিয়ান" => Ty::Bool,
                 "অক্ষর" => Ty::Ch,
                 "ফাঁকা" => Ty::Null,
                 other => {
@@ -340,7 +360,7 @@ impl Ck {
                     } else {
                         self.err(
                             id.pos,
-                            format!("'{}' অজানা টাইপ — প্রিমিটিভ টাইপ বা ঘোষিত 'ডাটা' ব্যবহার করুন", other),
+                            format!("'{}' অজানা টাইপ — প্রিমিটিভ টাইপ বা ঘোষিত 'তথ্য' ব্যবহার করুন", other),
                         );
                         Ty::Err
                     }
@@ -392,7 +412,7 @@ impl Ck {
                 self.user_imports.insert(imp.name.clone());
             }
         }
-        // Pass 1: every `ডাটা` name, so field types below may refer to a
+        // Pass 1: every `তথ্য` name, so field types below may refer to a
         // struct declared later in the file (and to itself, through a
         // pointer-like `শেয়ার`/array field).
         for s in &prog.structs {
@@ -408,7 +428,7 @@ impl Ck {
             if self.structs.insert(s.name.name.clone(), fields).is_some() {
                 self.err(
                     s.name.pos,
-                    format!("দুটি ডাটার একই নাম — '{}'", s.name.name),
+                    format!("দুটি তথ্যের একই নাম — '{}'", s.name.name),
                 );
             }
         }
@@ -737,7 +757,7 @@ impl Ck {
                 if !poisoned(&ct) && ct != Ty::Bool {
                     self.err(
                         i.pos,
-                        format!("'যদি'-এর শর্ত 'সত্যতা' টাইপের হতে হবে, পেয়েছে '{}'", ct),
+                        format!("'যদি'-এর শর্ত 'বুলিয়ান' টাইপের হতে হবে, পেয়েছে '{}'", ct),
                     );
                 }
                 let pre = self.snapshot();
@@ -777,7 +797,7 @@ impl Ck {
                     self.err(
                         w.pos,
                         format!(
-                            "'যতক্ষণ'-এর শর্ত 'সত্যতা' টাইপের হতে হবে, পেয়েছে '{}'",
+                            "'যতক্ষণ'-এর শর্ত 'বুলিয়ান' টাইপের হতে হবে, পেয়েছে '{}'",
                             ct
                         ),
                     );
@@ -823,12 +843,12 @@ impl Ck {
                 match &r.value {
                     Some(e) => {
                         let t = self.expr(e).unwrap_or(Ty::Unknown);
-                        self.try_move_src(e, "ফেরাও");
+                        self.try_move_src(e, "রিটার্ন");
                         if !unify(&expected, &t) {
                             self.err(
                                 r.pos,
                                 format!(
-                                    "'ফেরাও' টাইপ অমিল — '{}' প্রত্যাশিত, '{}' পাওয়া গেছে",
+                                    "'রিটার্ন' টাইপ অমিল — '{}' প্রত্যাশিত, '{}' পাওয়া গেছে",
                                     expected, t
                                 ),
                             );
@@ -839,7 +859,7 @@ impl Ck {
                             self.err(
                                 r.pos,
                                 format!(
-                                    "এই ফাংশন '{}' ফেরত দেওয়ার কথা — 'ফেরাও'-এর পরে মান দিন",
+                                    "এই ফাংশন '{}' ফেরত দেওয়ার কথা — 'রিটার্ন'-এর পরে মান দিন",
                                     expected
                                 ),
                             );
@@ -1079,7 +1099,7 @@ impl Ck {
                                 None => {
                                     self.err(
                                         name.pos,
-                                        format!("'{}' ডাটায় ফিল্ড '{}' নেই", sname, name.name),
+                                        format!("'{}' তথ্যে ফিল্ড '{}' নেই", sname, name.name),
                                     );
                                     return Some(Ty::Err);
                                 }
@@ -1135,11 +1155,11 @@ impl Ck {
                                 );
                             }
                         } else {
-                            self.err(field.pos, format!("'{}' ডাটায় ফিল্ড '{}' নেই", sname, field.name));
+                            self.err(field.pos, format!("'{}' তথ্যে ফিল্ড '{}' নেই", sname, field.name));
                         }
                     }
                 } else {
-                    self.err(base.pos, format!("'{}' ডাটা নয়", base.name));
+                    self.err(base.pos, format!("'{}' তথ্য নয়", base.name));
                 }
                 Ty::Null
             }
@@ -1162,7 +1182,7 @@ impl Ck {
                         } else if t == Ty::Bool {
                             Ty::Bool
                         } else {
-                            self.err(e.pos, "'না'-এর অপারেন্ড 'সত্যতা' হতে হবে");
+                            self.err(e.pos, "'না'-এর অপারেন্ড 'বুলিয়ান' হতে হবে");
                             Ty::Err
                         }
                     }
@@ -1273,7 +1293,7 @@ impl Ck {
                                                     self.err(
                                                         fname.pos,
                                                         format!(
-                                                            "'{}' ডাটায় ফিল্ড '{}' নেই",
+                                                            "'{}' তথ্যে ফিল্ড '{}' নেই",
                                                             sname, fname.name
                                                         ),
                                                     );
@@ -1362,7 +1382,7 @@ impl Ck {
                 if lt == Ty::Bool && rt == Ty::Bool {
                     Ty::Bool
                 } else {
-                    self.err(pos, "লজিক্যাল অপারেটরের অপারেন্ড 'সত্যতা' হতে হবে");
+                    self.err(pos, "লজিক্যাল অপারেটরের অপারেন্ড 'বুলিয়ান' হতে হবে");
                     Ty::Err
                 }
             }
@@ -1429,7 +1449,7 @@ impl Ck {
                 self.err(
                     pos,
                     format!(
-                        "'{}' ডাটায় {}টি ফিল্ড আছে, {}টি আর্গুমেন্ট দেওয়া হয়েছে",
+                        "'{}' তথ্যে {}টি ফিল্ড আছে, {}টি আর্গুমেন্ট দেওয়া হয়েছে",
                         name,
                         bn_num(fields.len() as u32),
                         bn_num(args.len() as u32)
@@ -1811,12 +1831,12 @@ impl Ck {
                             }
                         }
                         None => {
-                            self.err(field.pos, format!("'{}' ডাটায় ফিল্ড '{}' নেই", sname, field.name));
+                            self.err(field.pos, format!("'{}' তথ্যে ফিল্ড '{}' নেই", sname, field.name));
                         }
                     }
                 }
             } else {
-                self.err(target.base.pos, format!("'{}' ডাটা নয়", target.base.name));
+                self.err(target.base.pos, format!("'{}' তথ্য নয়", target.base.name));
             }
             return;
         }

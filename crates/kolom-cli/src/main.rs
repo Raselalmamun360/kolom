@@ -3,6 +3,8 @@ use std::process::ExitCode;
 
 use kolom_lexer::{bn_num, format_error, lex};
 
+mod editor;
+
 const VERSION: &str = "০.১.০";
 
 const HELP: &str = "কলম — বাংলা প্রোগ্রামিং ভাষা
@@ -15,6 +17,8 @@ const HELP: &str = "কলম — বাংলা প্রোগ্রামি
       --সি | --c-backend  পুরনো C ব্যাকএন্ড ব্যবহার করো (C কম্পাইলার লাগবে)
   kolom নতুন <নাম>       নতুন প্রকল্প তৈরি করো
   kolom new <name>       একই কাজ (ইংরেজি)
+  kolom পাতা <ফাইল.ক>    বিল্ট-ইন এডিটর (লাইভ ত্রুটি + Ctrl+R চালাও)
+  kolom edit <file.k>    একই কাজ (ইংরেজি)
   kolom টার্গেট           টার্গেট প্ল্যাটফর্ম তালিকা
   kolom lex <ফাইল.ক>     টোকেন ডিবাগ আউটপুট
   kolom সংস্করণ           সংস্করণ দেখাও
@@ -31,6 +35,7 @@ fn main() -> ExitCode {
             cmd_build(rest.first().copied(), rest.get(1).copied(), use_c)
         }
         Some("new") | Some("নতুন") => cmd_new(args.get(1)),
+        Some("edit") | Some("পাতা") => cmd_edit(args.get(1)),
         Some("target") | Some("টার্গেট") => cmd_target(),
         Some("lex") => cmd_lex(args.get(1)),
         Some("version") | Some("--version") | Some("-V") | Some("সংস্করণ") => {
@@ -383,6 +388,23 @@ fn cmd_new(name: Option<&String>) -> ExitCode {
     println!("বিল্ড করতে:");
     println!("  kolom বিল্ড {}/main.ক", project_name);
     ExitCode::SUCCESS
+}
+
+fn cmd_edit(path: Option<&String>) -> ExitCode {
+    let path = match path {
+        Some(p) => std::path::PathBuf::from(p),
+        None => {
+            eprintln!("ব্যবহার: kolom পাতা <ফাইল.ক>");
+            return ExitCode::FAILURE;
+        }
+    };
+    match editor::run(&path) {
+        Ok(()) => ExitCode::SUCCESS,
+        Err(e) => {
+            eprintln!("ত্রুটি: {}", e);
+            ExitCode::FAILURE
+        }
+    }
 }
 
 fn cmd_target() -> ExitCode {

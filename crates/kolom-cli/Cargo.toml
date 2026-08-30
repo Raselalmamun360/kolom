@@ -15,3 +15,4 @@ kolom-sema = { path = "../kolom-sema" }
 kolom-codegen = { path = "../kolom-codegen" }
 kolom-interp = { path = "../kolom-interp" }
 kolom-codegen-cranelift = { version = "0.1.0", path = "../kolom-codegen-cranelift" }
+crossterm = "0.28"

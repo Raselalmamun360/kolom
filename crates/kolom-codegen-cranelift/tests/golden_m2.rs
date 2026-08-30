@@ -80,7 +80,7 @@ fn golden_40_print_containers() {
 #[test]
 fn print_multi_field_containers() {
     let src = r#"
-ডাটা ব্যক্তি { নাম: লেখা, বয়স: সংখ্যা }
+তথ্য ব্যক্তি { নাম: লেখা, বয়স: সংখ্যা }
 
 অ্যাপ {
     ধরি প = ব্যক্তি("রহিম", ২৫)
