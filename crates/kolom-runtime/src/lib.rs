@@ -1459,3 +1459,297 @@ pub extern "C" fn kl_net_close(handle: i64) {
         let _ = s.shutdown(std::net::Shutdown::Both);
     }
 }
+
+// ============================================================================
+// ম্যাট্রিক্স (matrix) — ভেক্টর = দশমিক[] (elem_size 8, raw f64, no drop fn),
+// ম্যাট্রিক্স = দশমিক[][] (elem_size 8, each slot a pointer to a নেস্টেড
+// দশমিক[], drop fn kl_arr_decref so the rows get released with the outer
+// array — same convention as কল_map_keys' array-of-strings, just with
+// arrays instead of strings as the owned element).
+// ============================================================================
+
+unsafe fn vecf_from_arr(p: *mut u8) -> Vec<f64> {
+    let len = kl_arr_len(p);
+    (0..len).map(|i| unsafe { *(kl_arr_get_ptr(p, i) as *const f64) }).collect()
+}
+
+fn arr_from_vecf(v: &[f64]) -> *mut u8 {
+    let arr = kl_arr_new(8, v.len() as i64, 0);
+    for x in v {
+        kl_arr_push(arr, (x as *const f64) as *const u8);
+    }
+    arr
+}
+
+unsafe fn matf_from_arr(p: *mut u8) -> Vec<Vec<f64>> {
+    let len = kl_arr_len(p);
+    (0..len)
+        .map(|i| {
+            let row_ptr = unsafe { *(kl_arr_get_ptr(p, i) as *const *mut u8) };
+            unsafe { vecf_from_arr(row_ptr) }
+        })
+        .collect()
+}
+
+fn arr_from_matf(m: &[Vec<f64>]) -> *mut u8 {
+    let drop_addr = kl_arr_decref as *const () as usize as i64;
+    let arr = kl_arr_new(8, m.len() as i64, drop_addr);
+    for row in m {
+        let r = arr_from_vecf(row);
+        kl_arr_push(arr, (&r as *const *mut u8) as *const u8);
+    }
+    arr
+}
+
+/// Every row's length, or `None` if the rows disagree — `দশমিক[][]` is just
+/// nested arrays with no built-in rectangularity guarantee.
+fn mat_rect_cols(m: &[Vec<f64>]) -> Option<usize> {
+    let cols = m.first().map(|r| r.len()).unwrap_or(0);
+    if m.iter().all(|r| r.len() == cols) {
+        Some(cols)
+    } else {
+        None
+    }
+}
+
+/// Gaussian elimination with partial pivoting — shared by কল_মাত_det/inv.
+fn mat_eliminate(mut m: Vec<Vec<f64>>) -> (Vec<Vec<f64>>, f64, u32) {
+    let n = m.len();
+    let mut det = 1.0;
+    let mut swaps = 0u32;
+    for col in 0..n {
+        let pivot_row = (col..n)
+            .max_by(|&a, &b| m[a][col].abs().partial_cmp(&m[b][col].abs()).unwrap())
+            .unwrap();
+        if pivot_row != col {
+            m.swap(col, pivot_row);
+            swaps += 1;
+        }
+        let pivot = m[col][col];
+        det *= pivot;
+        if pivot.abs() < 1e-12 {
+            continue;
+        }
+        for row in (col + 1)..n {
+            let factor = m[row][col] / pivot;
+            for c in col..n {
+                m[row][c] -= factor * m[col][c];
+            }
+        }
+    }
+    (m, det, swaps)
+}
+
+fn mat_det_of(m: Vec<Vec<f64>>) -> f64 {
+    let (_, det, swaps) = mat_eliminate(m);
+    if swaps % 2 == 1 { -det } else { det }
+}
+
+/// Gauss-Jordan on the augmented `[m | I]` matrix. `None` if singular.
+fn mat_inv_of(m: Vec<Vec<f64>>) -> Option<Vec<Vec<f64>>> {
+    let n = m.len();
+    let mut aug: Vec<Vec<f64>> = m
+        .into_iter()
+        .enumerate()
+        .map(|(i, mut row)| {
+            let mut id = vec![0.0; n];
+            id[i] = 1.0;
+            row.extend(id);
+            row
+        })
+        .collect();
+    for col in 0..n {
+        let pivot_row = (col..n)
+            .max_by(|&a, &b| aug[a][col].abs().partial_cmp(&aug[b][col].abs()).unwrap())
+            .unwrap();
+        aug.swap(col, pivot_row);
+        let pivot = aug[col][col];
+        if pivot.abs() < 1e-12 {
+            return None;
+        }
+        for c in 0..(2 * n) {
+            aug[col][c] /= pivot;
+        }
+        for row in 0..n {
+            if row == col {
+                continue;
+            }
+            let factor = aug[row][col];
+            for c in 0..(2 * n) {
+                aug[row][c] -= factor * aug[col][c];
+            }
+        }
+    }
+    Some(aug.into_iter().map(|row| row[n..].to_vec()).collect())
+}
+
+#[no_mangle]
+pub extern "C" fn kl_mat_vec_add(a: *mut u8, b: *mut u8) -> *mut u8 {
+    let (a, b) = unsafe { (vecf_from_arr(a), vecf_from_arr(b)) };
+    if a.len() != b.len() {
+        fail("ভেক্টর_যোগ: দুই ভেক্টরের দৈর্ঘ্য সমান হতে হবে".into());
+        return arr_from_vecf(&[]);
+    }
+    arr_from_vecf(&a.iter().zip(&b).map(|(x, y)| x + y).collect::<Vec<_>>())
+}
+
+#[no_mangle]
+pub extern "C" fn kl_mat_vec_sub(a: *mut u8, b: *mut u8) -> *mut u8 {
+    let (a, b) = unsafe { (vecf_from_arr(a), vecf_from_arr(b)) };
+    if a.len() != b.len() {
+        fail("ভেক্টর_বিয়োগ: দুই ভেক্টরের দৈর্ঘ্য সমান হতে হবে".into());
+        return arr_from_vecf(&[]);
+    }
+    arr_from_vecf(&a.iter().zip(&b).map(|(x, y)| x - y).collect::<Vec<_>>())
+}
+
+#[no_mangle]
+pub extern "C" fn kl_mat_vec_scale(v: *mut u8, k: f64) -> *mut u8 {
+    let v = unsafe { vecf_from_arr(v) };
+    arr_from_vecf(&v.iter().map(|x| x * k).collect::<Vec<_>>())
+}
+
+#[no_mangle]
+pub extern "C" fn kl_mat_dot(a: *mut u8, b: *mut u8) -> f64 {
+    let (a, b) = unsafe { (vecf_from_arr(a), vecf_from_arr(b)) };
+    if a.len() != b.len() {
+        fail("ডট: দুই ভেক্টরের দৈর্ঘ্য সমান হতে হবে".into());
+        return 0.0;
+    }
+    a.iter().zip(&b).map(|(x, y)| x * y).sum()
+}
+
+#[no_mangle]
+pub extern "C" fn kl_mat_cross(a: *mut u8, b: *mut u8) -> *mut u8 {
+    let (a, b) = unsafe { (vecf_from_arr(a), vecf_from_arr(b)) };
+    if a.len() != 3 || b.len() != 3 {
+        fail("ক্রস: শুধু ৩-মাত্রিক ভেক্টরের জন্য সংজ্ঞায়িত".into());
+        return arr_from_vecf(&[0.0, 0.0, 0.0]);
+    }
+    arr_from_vecf(&[
+        a[1] * b[2] - a[2] * b[1],
+        a[2] * b[0] - a[0] * b[2],
+        a[0] * b[1] - a[1] * b[0],
+    ])
+}
+
+#[no_mangle]
+pub extern "C" fn kl_mat_norm(v: *mut u8) -> f64 {
+    let v = unsafe { vecf_from_arr(v) };
+    v.iter().map(|x| x * x).sum::<f64>().sqrt()
+}
+
+#[no_mangle]
+pub extern "C" fn kl_mat_add(a: *mut u8, b: *mut u8) -> *mut u8 {
+    let (a, b) = unsafe { (matf_from_arr(a), matf_from_arr(b)) };
+    let (ca, cb) = (mat_rect_cols(&a), mat_rect_cols(&b));
+    if ca.is_none() || cb.is_none() || a.len() != b.len() || ca != cb {
+        fail("যোগ: দুই ম্যাট্রিক্সের মাত্রা সমান ও আয়তাকার হতে হবে".into());
+        return arr_from_matf(&[]);
+    }
+    arr_from_matf(&a.iter().zip(&b).map(|(ra, rb)| ra.iter().zip(rb).map(|(x, y)| x + y).collect()).collect::<Vec<_>>())
+}
+
+#[no_mangle]
+pub extern "C" fn kl_mat_sub(a: *mut u8, b: *mut u8) -> *mut u8 {
+    let (a, b) = unsafe { (matf_from_arr(a), matf_from_arr(b)) };
+    let (ca, cb) = (mat_rect_cols(&a), mat_rect_cols(&b));
+    if ca.is_none() || cb.is_none() || a.len() != b.len() || ca != cb {
+        fail("বিয়োগ: দুই ম্যাট্রিক্সের মাত্রা সমান ও আয়তাকার হতে হবে".into());
+        return arr_from_matf(&[]);
+    }
+    arr_from_matf(&a.iter().zip(&b).map(|(ra, rb)| ra.iter().zip(rb).map(|(x, y)| x - y).collect()).collect::<Vec<_>>())
+}
+
+#[no_mangle]
+pub extern "C" fn kl_mat_scale(m: *mut u8, k: f64) -> *mut u8 {
+    let m = unsafe { matf_from_arr(m) };
+    arr_from_matf(&m.into_iter().map(|row| row.into_iter().map(|x| x * k).collect()).collect::<Vec<_>>())
+}
+
+#[no_mangle]
+pub extern "C" fn kl_mat_mul(a: *mut u8, b: *mut u8) -> *mut u8 {
+    let (a, b) = unsafe { (matf_from_arr(a), matf_from_arr(b)) };
+    let (Some(ca), Some(cb)) = (mat_rect_cols(&a), mat_rect_cols(&b)) else {
+        fail("গুণ: ম্যাট্রিক্সের প্রতিটি সারি একই দৈর্ঘ্যের হতে হবে".into());
+        return arr_from_matf(&[]);
+    };
+    let (ra, rb) = (a.len(), b.len());
+    if ca != rb {
+        fail(format!("গুণ: প্রথম ম্যাট্রিক্সের কলাম ({}) দ্বিতীয়টির সারির ({}) সমান হতে হবে", ca, rb));
+        return arr_from_matf(&[]);
+    }
+    let mut out = vec![vec![0.0; cb]; ra];
+    for (i, row) in out.iter_mut().enumerate() {
+        for (j, cell) in row.iter_mut().enumerate() {
+            *cell = (0..ca).map(|k| a[i][k] * b[k][j]).sum();
+        }
+    }
+    arr_from_matf(&out)
+}
+
+#[no_mangle]
+pub extern "C" fn kl_mat_transpose(m: *mut u8) -> *mut u8 {
+    let m = unsafe { matf_from_arr(m) };
+    let Some(cols) = mat_rect_cols(&m) else {
+        fail("ট্রান্সপোজ: ম্যাট্রিক্সের প্রতিটি সারি একই দৈর্ঘ্যের হতে হবে".into());
+        return arr_from_matf(&[]);
+    };
+    let rows = m.len();
+    let mut out = vec![vec![0.0; rows]; cols];
+    for (i, row) in m.iter().enumerate() {
+        for (j, v) in row.iter().enumerate() {
+            out[j][i] = *v;
+        }
+    }
+    arr_from_matf(&out)
+}
+
+#[no_mangle]
+pub extern "C" fn kl_mat_det(m: *mut u8) -> f64 {
+    let m = unsafe { matf_from_arr(m) };
+    match mat_rect_cols(&m) {
+        Some(cols) if cols == m.len() => mat_det_of(m),
+        _ => {
+            fail("নির্ণায়ক: শুধু বর্গ ম্যাট্রিক্সের জন্য সংজ্ঞায়িত".into());
+            0.0
+        }
+    }
+}
+
+#[no_mangle]
+pub extern "C" fn kl_mat_inv(m: *mut u8) -> *mut u8 {
+    let m = unsafe { matf_from_arr(m) };
+    match mat_rect_cols(&m) {
+        Some(cols) if cols == m.len() => match mat_inv_of(m) {
+            Some(inv) => arr_from_matf(&inv),
+            None => {
+                fail("বিপরীত: ম্যাট্রিক্সটি ইনভার্টিবল নয় (নির্ণায়ক শূন্য)".into());
+                arr_from_matf(&[])
+            }
+        },
+        _ => {
+            fail("বিপরীত: শুধু বর্গ ম্যাট্রিক্সের জন্য সংজ্ঞায়িত".into());
+            arr_from_matf(&[])
+        }
+    }
+}
+
+#[no_mangle]
+pub extern "C" fn kl_mat_identity(n: i64) -> *mut u8 {
+    if n < 1 {
+        fail("অভেদক: আকার কমপক্ষে ১ হতে হবে".into());
+        return arr_from_matf(&[]);
+    }
+    let n = n as usize;
+    arr_from_matf(&(0..n).map(|i| (0..n).map(|j| if i == j { 1.0 } else { 0.0 }).collect()).collect::<Vec<_>>())
+}
+
+#[no_mangle]
+pub extern "C" fn kl_mat_zeros(rows: i64, cols: i64) -> *mut u8 {
+    if rows < 1 || cols < 1 {
+        fail("শূন্য_ম্যাট্রিক্স: সারি ও কলাম কমপক্ষে ১ হতে হবে".into());
+        return arr_from_matf(&[]);
+    }
+    arr_from_matf(&vec![vec![0.0; cols as usize]; rows as usize])
+}

@@ -97,6 +97,18 @@ const FALLIBLE_RT: &[&str] = &[
     "kl_net_send",
     "kl_net_recv",
     "kl_fail_div_zero",
+    "kl_mat_vec_add",
+    "kl_mat_vec_sub",
+    "kl_mat_dot",
+    "kl_mat_cross",
+    "kl_mat_add",
+    "kl_mat_sub",
+    "kl_mat_mul",
+    "kl_mat_transpose",
+    "kl_mat_det",
+    "kl_mat_inv",
+    "kl_mat_identity",
+    "kl_mat_zeros",
 ];
 
 #[derive(Clone)]
@@ -781,8 +793,7 @@ impl Gen {
         Ok(CVal::Struct(ptr, name.to_string()))
     }
 
-    fn lower_field_read(&mut self, b: &mut FunctionBuilder, base: &Expr, fld: &Ident, env: &mut Env) -> Result<CVal, String> {
-        let bv = self.lower_expr(b, base, env)?;
+    fn apply_field(&mut self, b: &mut FunctionBuilder, bv: CVal, fld: &Ident) -> Result<CVal, String> {
         let (ptr, name) = match bv {
             CVal::Struct(p, n) => (p, n),
             _ => return Err("M2 codegen: '.' শুধু struct-এ ব্যবহার করা যায়".into()),
@@ -798,8 +809,13 @@ impl Gen {
         Ok(self.load_cval(b, &fty, ptr, offset))
     }
 
-    fn lower_index_read(&mut self, b: &mut FunctionBuilder, base: &Expr, ix: &Expr, env: &mut Env) -> Result<CVal, String> {
-        let bv = self.lower_expr(b, base, env)?;
+    /// Applies one `[...]` suffix to an already-lowered base value. Called
+    /// once per suffix from the `Postfix` chain-fold above (`arr[i]`,
+    /// `ম্যাট্রিক্স[i][j]`, ...) — the base is only ever lowered from its
+    /// `Expr` once, up front; each subsequent `[...]`/`.field` folds the
+    /// previous step's `CVal` forward instead of re-lowering an intermediate
+    /// `Expr`.
+    fn apply_index(&mut self, b: &mut FunctionBuilder, bv: CVal, ix: &Expr, env: &mut Env) -> Result<CVal, String> {
         match bv {
             CVal::Arr(ptr, elem_ty) => {
                 let idx_val = self.lower_expr_num(b, ix, env)?;
@@ -1145,11 +1161,21 @@ impl Gen {
                         return self.lower_stdlib_call(b, &module.name, &name.name, args, env);
                     }
                 }
-                if let [Suffix::Field(fld)] = suffixes.as_slice() {
-                    return self.lower_field_read(b, base, fld, env);
-                }
-                if let [Suffix::Index(ix, _)] = suffixes.as_slice() {
-                    return self.lower_index_read(b, base, ix, env);
+                // A run of one or more `[...]`/`.field` suffixes with no
+                // call among them — `arr[i]`, `s.field`, and their chains
+                // (`ম্যাট্রিক্স[i][j]`, `s.field[i]`, ...). Folds the base
+                // through each suffix in turn via `apply_index`/`apply_field`
+                // rather than re-lowering an intermediate `Expr` per step.
+                if !suffixes.is_empty() && suffixes.iter().all(|s| matches!(s, Suffix::Index(..) | Suffix::Field(_))) {
+                    let mut cur = self.lower_expr(b, base, env)?;
+                    for sfx in suffixes {
+                        cur = match sfx {
+                            Suffix::Index(ix, _) => self.apply_index(b, cur, ix, env)?,
+                            Suffix::Field(fld) => self.apply_field(b, cur, fld)?,
+                            Suffix::Call(..) => unreachable!("filtered out by the all() check above"),
+                        };
+                    }
+                    return Ok(cur);
                 }
                 Err("M3 codegen: এই postfix expression এখনো সমর্থিত নয়".into())
             }
@@ -1620,6 +1646,83 @@ impl Gen {
                 let h = self.lower_expr_num(b, &args[0], env)?;
                 self.call_rt_void(b, "kl_net_close", &[h]);
                 Ok(CVal::Void)
+            }
+
+            // ম্যাট্রিক্স — ভেক্টর = দশমিক[], ম্যাট্রিক্স = দশমিক[][]। Sema
+            // already checked shapes/arity statically where it can (element
+            // type, arg count); dimension-agreement (equal lengths, square,
+            // invertible, ...) can only be known at runtime, so those checks
+            // and their `চেষ্টা/ধরো`-catchable errors live in kolom-runtime
+            // (see FALLIBLE_RT above) — same split as file/network I/O.
+            ("ম্যাট্রিক্স", "ভেক্টর_যোগ") => {
+                let a = self.lower_expr_arr(b, &args[0], env)?;
+                let c = self.lower_expr_arr(b, &args[1], env)?;
+                Ok(CVal::Arr(self.call_rt(b, "kl_mat_vec_add", &[a, c]), Box::new(Ty::Dec)))
+            }
+            ("ম্যাট্রিক্স", "ভেক্টর_বিয়োগ") => {
+                let a = self.lower_expr_arr(b, &args[0], env)?;
+                let c = self.lower_expr_arr(b, &args[1], env)?;
+                Ok(CVal::Arr(self.call_rt(b, "kl_mat_vec_sub", &[a, c]), Box::new(Ty::Dec)))
+            }
+            ("ম্যাট্রিক্স", "ভেক্টর_স্কেল") => {
+                let v = self.lower_expr_arr(b, &args[0], env)?;
+                let k = self.lower_expr_dec(b, &args[1], env)?;
+                Ok(CVal::Arr(self.call_rt(b, "kl_mat_vec_scale", &[v, k]), Box::new(Ty::Dec)))
+            }
+            ("ম্যাট্রিক্স", "ডট") => {
+                let a = self.lower_expr_arr(b, &args[0], env)?;
+                let c = self.lower_expr_arr(b, &args[1], env)?;
+                Ok(CVal::Dec(self.call_rt(b, "kl_mat_dot", &[a, c])))
+            }
+            ("ম্যাট্রিক্স", "ক্রস") => {
+                let a = self.lower_expr_arr(b, &args[0], env)?;
+                let c = self.lower_expr_arr(b, &args[1], env)?;
+                Ok(CVal::Arr(self.call_rt(b, "kl_mat_cross", &[a, c]), Box::new(Ty::Dec)))
+            }
+            ("ম্যাট্রিক্স", "নর্ম") => {
+                let v = self.lower_expr_arr(b, &args[0], env)?;
+                Ok(CVal::Dec(self.call_rt(b, "kl_mat_norm", &[v])))
+            }
+            ("ম্যাট্রিক্স", "যোগ") => {
+                let a = self.lower_expr_arr(b, &args[0], env)?;
+                let c = self.lower_expr_arr(b, &args[1], env)?;
+                Ok(CVal::Arr(self.call_rt(b, "kl_mat_add", &[a, c]), Box::new(Ty::Arr(Box::new(Ty::Dec)))))
+            }
+            ("ম্যাট্রিক্স", "বিয়োগ") => {
+                let a = self.lower_expr_arr(b, &args[0], env)?;
+                let c = self.lower_expr_arr(b, &args[1], env)?;
+                Ok(CVal::Arr(self.call_rt(b, "kl_mat_sub", &[a, c]), Box::new(Ty::Arr(Box::new(Ty::Dec)))))
+            }
+            ("ম্যাট্রিক্স", "স্কেল") => {
+                let m = self.lower_expr_arr(b, &args[0], env)?;
+                let k = self.lower_expr_dec(b, &args[1], env)?;
+                Ok(CVal::Arr(self.call_rt(b, "kl_mat_scale", &[m, k]), Box::new(Ty::Arr(Box::new(Ty::Dec)))))
+            }
+            ("ম্যাট্রিক্স", "গুণ") => {
+                let a = self.lower_expr_arr(b, &args[0], env)?;
+                let c = self.lower_expr_arr(b, &args[1], env)?;
+                Ok(CVal::Arr(self.call_rt(b, "kl_mat_mul", &[a, c]), Box::new(Ty::Arr(Box::new(Ty::Dec)))))
+            }
+            ("ম্যাট্রিক্স", "ট্রান্সপোজ") => {
+                let m = self.lower_expr_arr(b, &args[0], env)?;
+                Ok(CVal::Arr(self.call_rt(b, "kl_mat_transpose", &[m]), Box::new(Ty::Arr(Box::new(Ty::Dec)))))
+            }
+            ("ম্যাট্রিক্স", "নির্ণায়ক") => {
+                let m = self.lower_expr_arr(b, &args[0], env)?;
+                Ok(CVal::Dec(self.call_rt(b, "kl_mat_det", &[m])))
+            }
+            ("ম্যাট্রিক্স", "বিপরীত") => {
+                let m = self.lower_expr_arr(b, &args[0], env)?;
+                Ok(CVal::Arr(self.call_rt(b, "kl_mat_inv", &[m]), Box::new(Ty::Arr(Box::new(Ty::Dec)))))
+            }
+            ("ম্যাট্রিক্স", "অভেদক") => {
+                let n = self.lower_expr_num(b, &args[0], env)?;
+                Ok(CVal::Arr(self.call_rt(b, "kl_mat_identity", &[n]), Box::new(Ty::Arr(Box::new(Ty::Dec)))))
+            }
+            ("ম্যাট্রিক্স", "শূন্য_ম্যাট্রিক্স") => {
+                let rows = self.lower_expr_num(b, &args[0], env)?;
+                let cols = self.lower_expr_num(b, &args[1], env)?;
+                Ok(CVal::Arr(self.call_rt(b, "kl_mat_zeros", &[rows, cols]), Box::new(Ty::Arr(Box::new(Ty::Dec)))))
             }
 
             _ => Err(format!(
@@ -2574,6 +2677,22 @@ pub fn emit_for(prog: &Program, target: crate::link::Target) -> Result<Vec<u8>, 
         ("kl_g_fillcircle", &[i64t, i64t, i64t], &[]),
         ("kl_g_text", &[i64t, i64t, ptr_ty], &[]),
         ("kl_g_font", &[ptr_ty, i64t], &[]),
+        // ম্যাট্রিক্স
+        ("kl_mat_vec_add", &[ptr_ty, ptr_ty], &[ptr_ty]),
+        ("kl_mat_vec_sub", &[ptr_ty, ptr_ty], &[ptr_ty]),
+        ("kl_mat_vec_scale", &[ptr_ty, f64t], &[ptr_ty]),
+        ("kl_mat_dot", &[ptr_ty, ptr_ty], &[f64t]),
+        ("kl_mat_cross", &[ptr_ty, ptr_ty], &[ptr_ty]),
+        ("kl_mat_norm", &[ptr_ty], &[f64t]),
+        ("kl_mat_add", &[ptr_ty, ptr_ty], &[ptr_ty]),
+        ("kl_mat_sub", &[ptr_ty, ptr_ty], &[ptr_ty]),
+        ("kl_mat_scale", &[ptr_ty, f64t], &[ptr_ty]),
+        ("kl_mat_mul", &[ptr_ty, ptr_ty], &[ptr_ty]),
+        ("kl_mat_transpose", &[ptr_ty], &[ptr_ty]),
+        ("kl_mat_det", &[ptr_ty], &[f64t]),
+        ("kl_mat_inv", &[ptr_ty], &[ptr_ty]),
+        ("kl_mat_identity", &[i64t], &[ptr_ty]),
+        ("kl_mat_zeros", &[i64t, i64t], &[ptr_ty]),
     ];
     let mut rt = HashMap::new();
     for (name, params, rets) in stdlib_imports {

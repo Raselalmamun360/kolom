@@ -47,3 +47,14 @@ fn mtime_unsupported_under_legacy_backend() {
     let msg = emit_would_panic(src);
     assert!(msg.contains("পরিবর্তনের_সময়"), "panic message should name the unsupported function: {msg:?}");
 }
+
+/// `ম্যাট্রিক্স`'s runtime lives in kolom-runtime (Cranelift backend only —
+/// nested-array marshalling and Gaussian elimination were never ported to
+/// this backend's hand-written C codegen). Its whole module is unsupported
+/// here, so any one function stands in for all of them.
+#[test]
+fn matrix_unsupported_under_legacy_backend() {
+    let src = "ইম্পোর্ট ম্যাট্রিক্স\n\nঅ্যাপ {\n    ধরি ক = ম্যাট্রিক্স.নির্ণায়ক([[1.0, 2.0], [3.0, 4.0]])\n}\n";
+    let msg = emit_would_panic(src);
+    assert!(msg.contains("নির্ণায়ক"), "panic message should name the unsupported function: {msg:?}");
+}

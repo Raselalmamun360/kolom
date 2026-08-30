@@ -1104,6 +1104,129 @@ impl<'o> Interp<'o> {
                 Ok(Value::Null)
             }
 
+            // ম্যাট্রিক্স — ভেক্টর = দশমিক[], ম্যাট্রিক্স = দশমিক[][]
+            ("ম্যাট্রিক্স", "ভেক্টর_যোগ", [a, b]) => {
+                let (a, b) = (to_vecf(a)?, to_vecf(b)?);
+                if a.len() != b.len() {
+                    return Err(err(pos, "ভেক্টর_যোগ: দুই ভেক্টরের দৈর্ঘ্য সমান হতে হবে"));
+                }
+                Ok(vecf_val(a.iter().zip(&b).map(|(x, y)| x + y).collect()))
+            }
+            ("ম্যাট্রিক্স", "ভেক্টর_বিয়োগ", [a, b]) => {
+                let (a, b) = (to_vecf(a)?, to_vecf(b)?);
+                if a.len() != b.len() {
+                    return Err(err(pos, "ভেক্টর_বিয়োগ: দুই ভেক্টরের দৈর্ঘ্য সমান হতে হবে"));
+                }
+                Ok(vecf_val(a.iter().zip(&b).map(|(x, y)| x - y).collect()))
+            }
+            ("ম্যাট্রিক্স", "ভেক্টর_স্কেল", [v, k]) => {
+                let (v, k) = (to_vecf(v)?, num_f(k)?);
+                Ok(vecf_val(v.iter().map(|x| x * k).collect()))
+            }
+            ("ম্যাট্রিক্স", "ডট", [a, b]) => {
+                let (a, b) = (to_vecf(a)?, to_vecf(b)?);
+                if a.len() != b.len() {
+                    return Err(err(pos, "ডট: দুই ভেক্টরের দৈর্ঘ্য সমান হতে হবে"));
+                }
+                Ok(Value::Dec(a.iter().zip(&b).map(|(x, y)| x * y).sum()))
+            }
+            ("ম্যাট্রিক্স", "ক্রস", [a, b]) => {
+                let (a, b) = (to_vecf(a)?, to_vecf(b)?);
+                if a.len() != 3 || b.len() != 3 {
+                    return Err(err(pos, "ক্রস: শুধু ৩-মাত্রিক ভেক্টরের জন্য সংজ্ঞায়িত"));
+                }
+                Ok(vecf_val(vec![
+                    a[1] * b[2] - a[2] * b[1],
+                    a[2] * b[0] - a[0] * b[2],
+                    a[0] * b[1] - a[1] * b[0],
+                ]))
+            }
+            ("ম্যাট্রিক্স", "নর্ম", [v]) => {
+                let v = to_vecf(v)?;
+                Ok(Value::Dec(v.iter().map(|x| x * x).sum::<f64>().sqrt()))
+            }
+            ("ম্যাট্রিক্স", "যোগ", [a, b]) => {
+                let (a, b) = (to_matf(a)?, to_matf(b)?);
+                let (ra, ca) = mat_shape(&a, pos)?;
+                let (rb, cb) = mat_shape(&b, pos)?;
+                if (ra, ca) != (rb, cb) {
+                    return Err(err(pos, "যোগ: দুই ম্যাট্রিক্সের মাত্রা সমান হতে হবে"));
+                }
+                Ok(matf_val(a.iter().zip(&b).map(|(ra, rb)| ra.iter().zip(rb).map(|(x, y)| x + y).collect()).collect()))
+            }
+            ("ম্যাট্রিক্স", "বিয়োগ", [a, b]) => {
+                let (a, b) = (to_matf(a)?, to_matf(b)?);
+                let (ra, ca) = mat_shape(&a, pos)?;
+                let (rb, cb) = mat_shape(&b, pos)?;
+                if (ra, ca) != (rb, cb) {
+                    return Err(err(pos, "বিয়োগ: দুই ম্যাট্রিক্সের মাত্রা সমান হতে হবে"));
+                }
+                Ok(matf_val(a.iter().zip(&b).map(|(ra, rb)| ra.iter().zip(rb).map(|(x, y)| x - y).collect()).collect()))
+            }
+            ("ম্যাট্রিক্স", "স্কেল", [m, k]) => {
+                let (m, k) = (to_matf(m)?, num_f(k)?);
+                mat_shape(&m, pos)?;
+                Ok(matf_val(m.into_iter().map(|row| row.into_iter().map(|x| x * k).collect()).collect()))
+            }
+            ("ম্যাট্রিক্স", "গুণ", [a, b]) => {
+                let (a, b) = (to_matf(a)?, to_matf(b)?);
+                let (ra, ca) = mat_shape(&a, pos)?;
+                let (rb, cb) = mat_shape(&b, pos)?;
+                if ca != rb {
+                    return Err(err(pos, format!("গুণ: প্রথম ম্যাট্রিক্সের কলাম ({}) দ্বিতীয়টির সারির ({}) সমান হতে হবে", ca, rb)));
+                }
+                let mut out = vec![vec![0.0; cb]; ra];
+                for (i, row) in out.iter_mut().enumerate() {
+                    for (j, cell) in row.iter_mut().enumerate() {
+                        *cell = (0..ca).map(|k| a[i][k] * b[k][j]).sum();
+                    }
+                }
+                Ok(matf_val(out))
+            }
+            ("ম্যাট্রিক্স", "ট্রান্সপোজ", [m]) => {
+                let m = to_matf(m)?;
+                let (rows, cols) = mat_shape(&m, pos)?;
+                let mut out = vec![vec![0.0; rows]; cols];
+                for (i, row) in m.iter().enumerate() {
+                    for (j, v) in row.iter().enumerate() {
+                        out[j][i] = *v;
+                    }
+                }
+                Ok(matf_val(out))
+            }
+            ("ম্যাট্রিক্স", "নির্ণায়ক", [m]) => {
+                let m = to_matf(m)?;
+                let (rows, cols) = mat_shape(&m, pos)?;
+                if rows != cols {
+                    return Err(err(pos, "নির্ণায়ক: শুধু বর্গ ম্যাট্রিক্সের জন্য সংজ্ঞায়িত"));
+                }
+                Ok(Value::Dec(mat_det(m)))
+            }
+            ("ম্যাট্রিক্স", "বিপরীত", [m]) => {
+                let m = to_matf(m)?;
+                let (rows, cols) = mat_shape(&m, pos)?;
+                if rows != cols {
+                    return Err(err(pos, "বিপরীত: শুধু বর্গ ম্যাট্রিক্সের জন্য সংজ্ঞায়িত"));
+                }
+                match mat_inv(m) {
+                    Some(inv) => Ok(matf_val(inv)),
+                    None => Err(err(pos, "বিপরীত: ম্যাট্রিক্সটি ইনভার্টিবল নয় (নির্ণায়ক শূন্য)")),
+                }
+            }
+            ("ম্যাট্রিক্স", "অভেদক", [Value::Num(n)]) => {
+                if *n < 1 {
+                    return Err(err(pos, "অভেদক: আকার কমপক্ষে ১ হতে হবে"));
+                }
+                let n = *n as usize;
+                Ok(matf_val((0..n).map(|i| (0..n).map(|j| if i == j { 1.0 } else { 0.0 }).collect()).collect()))
+            }
+            ("ম্যাট্রিক্স", "শূন্য_ম্যাট্রিক্স", [Value::Num(rows), Value::Num(cols)]) => {
+                if *rows < 1 || *cols < 1 {
+                    return Err(err(pos, "শূন্য_ম্যাট্রিক্স: সারি ও কলাম কমপক্ষে ১ হতে হবে"));
+                }
+                Ok(matf_val(vec![vec![0.0; *cols as usize]; *rows as usize]))
+            }
+
             // গ্রাফিক্স — ইন্টারপ্রেটেড মোডে আঁকা no-op
             ("গ্রাফিক্স", _, _) => Ok(Value::Null),
 
@@ -1549,6 +1672,121 @@ fn num_f(v: &Value) -> Result<f64, InterpError> {    match v {
             message: format!("সংখ্যা প্রত্যাশিত, '{}' পাওয়া গেছে", other),
         }),
     }
+}
+
+fn to_vecf(v: &Value) -> Result<Vec<f64>, InterpError> {
+    match v {
+        Value::Arr(a) => a.borrow().iter().map(num_f).collect(),
+        other => Err(InterpError {
+            line: 0,
+            col: 0,
+            message: format!("ভেক্টর (দশমিক[]) প্রত্যাশিত, '{}' পাওয়া গেছে", other),
+        }),
+    }
+}
+
+fn vecf_val(v: Vec<f64>) -> Value {
+    Value::Arr(Rc::new(RefCell::new(v.into_iter().map(Value::Dec).collect())))
+}
+
+fn to_matf(v: &Value) -> Result<Vec<Vec<f64>>, InterpError> {
+    match v {
+        Value::Arr(a) => a.borrow().iter().map(to_vecf).collect(),
+        other => Err(InterpError {
+            line: 0,
+            col: 0,
+            message: format!("ম্যাট্রিক্স (দশমিক[][]) প্রত্যাশিত, '{}' পাওয়া গেছে", other),
+        }),
+    }
+}
+
+fn matf_val(m: Vec<Vec<f64>>) -> Value {
+    Value::Arr(Rc::new(RefCell::new(m.into_iter().map(vecf_val).collect())))
+}
+
+// Validates that every row has the same length, returning (rows, cols).
+// A `দশমিক[][]` value is just nested arrays with no rectangularity
+// guarantee, so every matrix op checks this before trusting row/col counts.
+fn mat_shape(m: &[Vec<f64>], pos: Pos) -> Result<(usize, usize), InterpError> {
+    let rows = m.len();
+    let cols = m.first().map(|r| r.len()).unwrap_or(0);
+    if m.iter().any(|r| r.len() != cols) {
+        return Err(err(pos, "ম্যাট্রিক্স-এর প্রতিটি সারি একই দৈর্ঘ্যের হতে হবে"));
+    }
+    Ok((rows, cols))
+}
+
+// Gaussian elimination with partial pivoting, shared by নির্ণায়ক ও বিপরীত.
+// Returns the row-echelon form, the pivot value product (for the
+// determinant), and the number of row swaps (its sign flips the sign).
+fn mat_eliminate(mut m: Vec<Vec<f64>>) -> (Vec<Vec<f64>>, f64, u32) {
+    let n = m.len();
+    let mut det = 1.0;
+    let mut swaps = 0u32;
+    for col in 0..n {
+        let pivot_row = (col..n)
+            .max_by(|&a, &b| m[a][col].abs().partial_cmp(&m[b][col].abs()).unwrap())
+            .unwrap();
+        if pivot_row != col {
+            m.swap(col, pivot_row);
+            swaps += 1;
+        }
+        let pivot = m[col][col];
+        det *= pivot;
+        if pivot.abs() < 1e-12 {
+            continue;
+        }
+        for row in (col + 1)..n {
+            let factor = m[row][col] / pivot;
+            for c in col..n {
+                m[row][c] -= factor * m[col][c];
+            }
+        }
+    }
+    (m, det, swaps)
+}
+
+fn mat_det(m: Vec<Vec<f64>>) -> f64 {
+    let (_, det, swaps) = mat_eliminate(m);
+    if swaps % 2 == 1 { -det } else { det }
+}
+
+// Gauss-Jordan on the augmented [m | I] matrix.
+fn mat_inv(m: Vec<Vec<f64>>) -> Option<Vec<Vec<f64>>> {
+    let n = m.len();
+    let mut aug: Vec<Vec<f64>> = m
+        .into_iter()
+        .enumerate()
+        .map(|(i, mut row)| {
+            let mut id = vec![0.0; n];
+            id[i] = 1.0;
+            row.extend(id);
+            row
+        })
+        .collect();
+    for col in 0..n {
+        let pivot_row = (col..n)
+            .max_by(|&a, &b| aug[a][col].abs().partial_cmp(&aug[b][col].abs()).unwrap())
+            .unwrap();
+        aug.swap(col, pivot_row);
+        let pivot = aug[col][col];
+        if pivot.abs() < 1e-12 {
+            return None;
+        }
+        for c in 0..(2 * n) {
+            aug[col][c] /= pivot;
+        }
+        for row in 0..n {
+            if row == col {
+                continue;
+            }
+            let factor = aug[row][col];
+            for c in 0..(2 * n) {
+                aug[row][c] -= factor * aug[col][c];
+            }
+        }
+    }
+    Some(aug.into_iter().map(|row| row[n..].to_vec()).collect())
 }
 
 fn values_eq(l: &Value, r: &Value) -> bool {
