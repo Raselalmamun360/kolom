@@ -594,6 +594,13 @@ pub extern "C" fn kl_math_max_i(a: i64, b: i64) -> i64 {
 pub extern "C" fn kl_math_min_f(a: f64, b: f64) -> f64 {
     a.min(b)
 }
+/// `a % b` on দশমিক. Cranelift has no float-remainder instruction (nor does
+/// the underlying hardware), so this backs the `%` operator via Rust's `%`
+/// on `f64` — the same operator the interpreter uses, so the two agree.
+#[no_mangle]
+pub extern "C" fn kl_math_fmod(a: f64, b: f64) -> f64 {
+    a % b
+}
 #[no_mangle]
 pub extern "C" fn kl_math_max_f(a: f64, b: f64) -> f64 {
     a.max(b)

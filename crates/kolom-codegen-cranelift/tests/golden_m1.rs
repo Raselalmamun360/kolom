@@ -29,6 +29,16 @@ fn golden_36_continue() {
     assert_matches_reference("36_continue");
 }
 
+/// সংখ্যা/দশমিক mixed arithmetic (promotion) and `%` on দশমিক — neither had
+/// a Cranelift lowering until a v1.0 audit found both: sema accepts mixed
+/// arithmetic (`language.md` §৬ documents it explicitly, `%` included) but
+/// codegen only had matching-type arms, and had no float-remainder path at
+/// all since Cranelift has no such instruction.
+#[test]
+fn golden_38_mixed_arithmetic() {
+    assert_matches_reference("38_mixed_arithmetic");
+}
+
 #[test]
 fn golden_01_hello() {
     assert_matches_reference("01_hello");

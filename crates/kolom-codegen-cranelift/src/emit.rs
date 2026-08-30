@@ -431,9 +431,21 @@ impl Gen {
         Ok(CVal::Txt(b.inst_results(call)[0]))
     }
 
+    /// A zero-length array of `elem_ty`, for `[]` written against a
+    /// `: Type[]` annotation (`grammer.md` §১১.৪) — the only place an empty
+    /// `ArrayLiteral` carries no element type of its own to infer from.
+    fn lower_empty_array_lit(&mut self, b: &mut FunctionBuilder, elem_ty: Ty) -> Result<CVal, String> {
+        let drop_addr = self.drop_addr_for(b, &elem_ty)?;
+        let es_const = b.ins().iconst(types::I64, 8);
+        let len_const = b.ins().iconst(types::I64, 0);
+        let newf = self.module.declare_func_in_func(self.arr_new, b.func);
+        let call = b.ins().call(newf, &[es_const, len_const, drop_addr]);
+        Ok(CVal::Arr(b.inst_results(call)[0], Box::new(elem_ty)))
+    }
+
     fn lower_array_lit(&mut self, b: &mut FunctionBuilder, elems: &[Expr], env: &mut Env) -> Result<CVal, String> {
         if elems.is_empty() {
-            return Err("M2 codegen: খালি array literal এখনো সমর্থিত নয়".into());
+            return Err("M2 codegen: খালি array literal-এর টাইপ অনুমান করা যায় না — ': Type[]' টীকা দিন, যেমন `ধরি x: সংখ্যা[] = []`".into());
         }
         let mut vals = Vec::with_capacity(elems.len());
         for e in elems {
@@ -470,6 +482,19 @@ impl Gen {
         }
     }
 
+    /// `dec_binop`, except `%` — Cranelift has no float-remainder
+    /// instruction, so that one operator is routed to `kl_math_fmod` instead
+    /// (`language.md` §৬ documents `%` as working on `দশমিক` same as every
+    /// other arithmetic operator, so this needs to actually work, not just
+    /// the ops that happened to map onto a single Cranelift instruction).
+    fn dec_binop_or_mod(&mut self, b: &mut FunctionBuilder, op: BinOp, a: Value, c: Value) -> Result<CVal, String> {
+        if op == BinOp::Mod {
+            Ok(CVal::Dec(self.call_rt(b, "kl_math_fmod", &[a, c])))
+        } else {
+            dec_binop(b, op, a, c)
+        }
+    }
+
     fn lower_binary(&mut self, b: &mut FunctionBuilder, op: BinOp, l: &Expr, r: &Expr, env: &mut Env) -> Result<CVal, String> {
         let lv = self.lower_expr(b, l, env)?;
         let rv = self.lower_expr(b, r, env)?;
@@ -481,18 +506,18 @@ impl Gen {
                 BinOp::Div | BinOp::Mod => Ok(CVal::Num(self.lower_int_div(b, op, a, c))),
                 _ => num_binop(b, op, a, c),
             },
-            (CVal::Dec(a), CVal::Dec(c)) => dec_binop(b, op, a, c),
+            (CVal::Dec(a), CVal::Dec(c)) => self.dec_binop_or_mod(b, op, a, c),
             // সংখ্যা/দশমিক mixed arithmetic promotes to দশমিক, matching
             // sema's `arith_num` (`language.md` §৬) — sema already accepts
             // these programs, so codegen has to actually handle them rather
             // than falling through to the "types don't match" error below.
             (CVal::Num(a), CVal::Dec(c)) => {
                 let af = b.ins().fcvt_from_sint(types::F64, a);
-                dec_binop(b, op, af, c)
+                self.dec_binop_or_mod(b, op, af, c)
             }
             (CVal::Dec(a), CVal::Num(c)) => {
                 let cf = b.ins().fcvt_from_sint(types::F64, c);
-                dec_binop(b, op, a, cf)
+                self.dec_binop_or_mod(b, op, a, cf)
             }
             (CVal::Bool(a), CVal::Bool(c)) => bool_binop(b, op, a, c),
             (CVal::Txt(a), CVal::Txt(c)) => match op {
@@ -929,9 +954,23 @@ impl Gen {
                 // `stdlib_module.item` syntactically — both are `Ident.Ident`.
                 // If `module` resolves to a local Struct-typed variable,
                 // treat this as a field read; otherwise it's an actual
-                // stdlib access (only calls are supported — see the Postfix
-                // arm above; a bare qualified constant read like `গণিত.পাই`
-                // isn't wired up yet).
+                // stdlib access. Only two stdlib names are ever bare
+                // constants rather than calls — `গণিত`-এর `পাই`/`ই` — so
+                // those are checked directly rather than generalizing the
+                // whole `StdSig::Const` mechanism for a set of two.
+                if module.name == "গণিত" && env.lookup(&module.name).is_none() {
+                    match name.name.as_str() {
+                        "পাই" => {
+                            let v = b.ins().f64const(std::f64::consts::PI);
+                            return Ok(CVal::Dec(v));
+                        }
+                        "ই" => {
+                            let v = b.ins().f64const(std::f64::consts::E);
+                            return Ok(CVal::Dec(v));
+                        }
+                        _ => {}
+                    }
+                }
                 if let Some(sym) = env.lookup(&module.name) {
                     if let Ty::Struct(sname) = &sym.ty {
                         let layout = self.structs.get(sname).cloned().ok_or_else(|| format!("অজানা struct '{}'", sname))?;
@@ -1367,6 +1406,20 @@ impl Gen {
             b.def_var(var, cval_value(&v));
             env.insert(name.name.clone(), Sym { ty, var });
             return Ok(());
+        }
+        // An empty `ArrayLiteral` has no element to infer a type from, so —
+        // like `ম্যাপ_তৈরি()` above — it only works against a `: Type[]`
+        // annotation.
+        if matches!(&init.kind, ExprKind::Lit(Lit::Array(elems)) if elems.is_empty()) {
+            if let Some(TypeExpr::Array(inner)) = ty_hint {
+                let v = self.lower_empty_array_lit(b, resolve_type(inner))?;
+                let ty = cval_ty(&v);
+                let cty = self.clif_ty_of(&ty);
+                let var = b.declare_var(cty);
+                b.def_var(var, cval_value(&v));
+                env.insert(name.name.clone(), Sym { ty, var });
+                return Ok(());
+            }
         }
         let v = self.lower_expr_for_binding(b, init, env)?;
         let ty = cval_ty(&v);
@@ -2150,6 +2203,7 @@ pub fn emit_for(prog: &Program, target: crate::link::Target) -> Result<Vec<u8>, 
         ("kl_math_max_i", &[i64t, i64t], &[i64t]),
         ("kl_math_min_f", &[f64t, f64t], &[f64t]),
         ("kl_math_max_f", &[f64t, f64t], &[f64t]),
+        ("kl_math_fmod", &[f64t, f64t], &[f64t]),
         ("kl_dec_to_text", &[f64t], &[ptr_ty]),
         ("kl_bool_to_text", &[i8t], &[ptr_ty]),
         // লেখা

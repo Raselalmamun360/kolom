@@ -28,6 +28,17 @@ fn golden_29_map_type() {
     assert_matches_reference("29_map_type");
 }
 
+/// A `: Type[]` annotated empty `[]`, and a bare stdlib constant reference
+/// (`গণিত.পাই`/`ই`, not called) — both had no Cranelift lowering at all
+/// until this fixture was added; the empty array fell through to a "not
+/// supported" error even with its required annotation present, and a
+/// comment beside the bare-qualified-expression code literally said this
+/// case "isn't wired up yet".
+#[test]
+fn golden_37_empty_array_and_const() {
+    assert_matches_reference("37_empty_array_and_const");
+}
+
 // These create files, so they run in a freshly-cleared working directory
 // rather than wherever the test binary happens to start.
 #[test]
