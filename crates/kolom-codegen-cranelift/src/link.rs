@@ -63,13 +63,28 @@ pub enum Target {
     WindowsGnu,
     /// x86_64 Linux, statically linked against musl.
     LinuxMusl,
+    /// aarch64 Android (arm64-v8a — the only ABI new devices ship), statically
+    /// linked against Bionic. Unlike the other two, Bionic does not ship
+    /// inside the Rust toolchain or come bundled with anything Kolom
+    /// installs — an NDK is required on the machine that builds for this
+    /// target (see `find_android_ndk`).
+    AndroidArm64,
 }
+
+/// The Android API level Kolom links against — chosen as a broadly
+/// compatible floor (covers essentially every device still receiving
+/// updates), not because anything here needs an API this recent. Only
+/// affects which of the NDK's per-level `crtbegin`/`crtend` objects are
+/// selected; Bionic's libc itself is not versioned per level the way the
+/// CRT startup objects are.
+const ANDROID_API_LEVEL: u32 = 24;
 
 impl Target {
     pub fn triple(self) -> &'static str {
         match self {
             Target::WindowsGnu => "x86_64-pc-windows-gnu",
             Target::LinuxMusl => "x86_64-unknown-linux-musl",
+            Target::AndroidArm64 => "aarch64-linux-android",
         }
     }
 
@@ -78,6 +93,7 @@ impl Target {
         match name {
             "windows" => Some(Target::WindowsGnu),
             "linux" => Some(Target::LinuxMusl),
+            "android" => Some(Target::AndroidArm64),
             _ => None,
         }
     }
@@ -90,7 +106,7 @@ impl Target {
     pub fn exe_suffix(self) -> &'static str {
         match self {
             Target::WindowsGnu => ".exe",
-            Target::LinuxMusl => "",
+            Target::LinuxMusl | Target::AndroidArm64 => "",
         }
     }
 }
@@ -242,7 +258,127 @@ pub fn find_lib_dirs(target: Target) -> Vec<PathBuf> {
     match target {
         Target::LinuxMusl => rust_self_contained_dir(target).into_iter().collect(),
         Target::WindowsGnu => find_mingw_lib_dirs(),
+        Target::AndroidArm64 => find_android_lib_dirs(target),
     }
+}
+
+#[cfg(windows)]
+const NDK_LLD_NAME: &str = "ld.lld.exe";
+#[cfg(not(windows))]
+const NDK_LLD_NAME: &str = "ld.lld";
+
+/// The NDK's own `ld.lld`, used for `Target::AndroidArm64` instead of the
+/// bundled `rust-lld` that every other target links with.
+///
+/// This is a deliberate, target-scoped exception to "kolom carries its own
+/// linker" — not a compromise on it. Android needs an NDK on the build
+/// machine regardless (Bionic is not bundled with Rust the way musl is), and
+/// once one is required anyway, its `ld.lld` is the one guaranteed to match
+/// it: newer NDK releases ship debug info in `libc.a`/`libm.a` compressed
+/// with zstd, and the `rust-lld` a Rust toolchain bundles is not built with
+/// zstd support, so it fails to link *any* Android object — even
+/// `--strip-debug` cannot skip the sections it cannot decompress in the
+/// first place. The NDK's own `ld.lld` is the same LLD codebase, built by
+/// the same people who chose that compression, so it reads its own output.
+fn find_android_linker() -> Option<PathBuf> {
+    let ndk = find_android_ndk()?;
+    let prebuilt = android_ndk_prebuilt(&ndk)?;
+    let p = prebuilt.join("bin").join(NDK_LLD_NAME);
+    p.exists().then_some(p)
+}
+
+/// `libclang_rt.builtins-aarch64-android.a` — compiler-rt's software
+/// fallback for atomic compare-and-swap on cores that lack the ARMv8.1 LSE
+/// instructions natively. Bionic's own `libc.a` calls into these
+/// (`__aarch64_cas4_acq` and friends); clang links this in automatically
+/// when acting as a linker driver, but a raw `ld.lld` invocation does not,
+/// so kolom's own link command has to add it explicitly.
+fn find_android_builtins(ndk: &Path) -> Option<PathBuf> {
+    let prebuilt = android_ndk_prebuilt(ndk)?;
+    let versions = glob(&prebuilt.join("lib").join("clang"), &["*"]);
+    for v in versions {
+        let p = v.join("lib").join("linux").join("libclang_rt.builtins-aarch64-android.a");
+        if p.exists() {
+            return Some(p);
+        }
+    }
+    None
+}
+
+/// LLVM's `libunwind.a` — unlike glibc/musl, Bionic's own libc does not
+/// provide the `_Unwind_*` entry points Rust's `std` needs for panics and
+/// backtraces, so this has to be linked in separately. Same reasoning as
+/// `find_android_builtins` for why a raw `ld.lld` needs it spelled out.
+fn find_android_libunwind(ndk: &Path) -> Option<PathBuf> {
+    let prebuilt = android_ndk_prebuilt(ndk)?;
+    let versions = glob(&prebuilt.join("lib").join("clang"), &["*"]);
+    for v in versions {
+        let p = v.join("lib").join("linux").join("aarch64").join("libunwind.a");
+        if p.exists() {
+            return Some(p);
+        }
+    }
+    None
+}
+
+/// Locates an installed NDK: `$ANDROID_NDK_HOME`/`$ANDROID_NDK_ROOT`
+/// directly, or the highest-versioned `ndk/*` under `$ANDROID_HOME`/
+/// `$ANDROID_SDK_ROOT` (how `sdkmanager`-installed NDKs are laid out).
+/// Unlike `find_mingw_lib_dirs`, this has no hardcoded fallback paths —
+/// there is no single conventional NDK install location the way MSYS2/
+/// standalone MinGW have one or two.
+fn find_android_ndk() -> Option<PathBuf> {
+    for var in ["ANDROID_NDK_HOME", "ANDROID_NDK_ROOT"] {
+        if let Ok(p) = std::env::var(var) {
+            if !p.trim().is_empty() && Path::new(&p).is_dir() {
+                return Some(PathBuf::from(p));
+            }
+        }
+    }
+    for var in ["ANDROID_HOME", "ANDROID_SDK_ROOT"] {
+        if let Ok(sdk) = std::env::var(var) {
+            if sdk.trim().is_empty() {
+                continue;
+            }
+            let mut versions = glob(&PathBuf::from(sdk).join("ndk"), &["*"]);
+            versions.sort();
+            if let Some(latest) = versions.pop() {
+                return Some(latest);
+            }
+        }
+    }
+    None
+}
+
+/// The NDK's prebuilt host toolchain directory, which holds `sysroot/`
+/// (Bionic + CRT objects) regardless of which target inside the NDK is
+/// being built for.
+fn android_ndk_prebuilt(ndk: &Path) -> Option<PathBuf> {
+    let host_tag = if cfg!(windows) {
+        "windows-x86_64"
+    } else if cfg!(target_os = "macos") {
+        "darwin-x86_64"
+    } else {
+        "linux-x86_64"
+    };
+    let p = ndk.join("toolchains").join("llvm").join("prebuilt").join(host_tag);
+    p.is_dir().then_some(p)
+}
+
+/// `<ndk>/.../sysroot/usr/lib/aarch64-linux-android` (Bionic's static
+/// libraries, not versioned per API level) and its `/<ANDROID_API_LEVEL>`
+/// subdirectory (the `crtbegin_static.o`/`crtend_android.o` CRT objects,
+/// which *are* versioned per level) — both are needed on the linker's
+/// search path.
+fn find_android_lib_dirs(target: Target) -> Vec<PathBuf> {
+    let Some(ndk) = find_android_ndk() else { return Vec::new() };
+    let Some(prebuilt) = android_ndk_prebuilt(&ndk) else { return Vec::new() };
+    let base = prebuilt.join("sysroot").join("usr").join("lib").join(target.triple());
+    let versioned = base.join(ANDROID_API_LEVEL.to_string());
+    if !base.is_dir() || !versioned.is_dir() {
+        return Vec::new();
+    }
+    vec![versioned, base]
 }
 
 /// `<rustc sysroot>/lib/rustlib/<triple>/lib/self-contained` — where Rust
@@ -302,12 +438,23 @@ const WINDOWS_LIBS: &[&str] = &[
 
 /// Links `obj_path` into `exe_path` for `target`.
 pub fn link_executable_for(target: Target, obj_path: &Path, exe_path: &Path) -> Result<(), LinkError> {
-    let linker = match find_linker() {
-        Some(l) => l,
-        None => {
-            return err(
-                "লিংকার পাওয়া যায়নি — kolom sysroot-এ 'bin/rust-lld' রাখো,                  অথবা Rust টুলচেইন ইনস্টল করো (KOLOM_SYSROOT দিয়ে পথ বদলানো যায়)",
-            )
+    let linker = if target == Target::AndroidArm64 {
+        match find_android_linker() {
+            Some(l) => l,
+            None => {
+                return err(
+                    "NDK-এর 'ld.lld' পাওয়া যায়নি — ANDROID_NDK_HOME ঠিক আছে কিনা দেখো",
+                )
+            }
+        }
+    } else {
+        match find_linker() {
+            Some(l) => l,
+            None => {
+                return err(
+                    "লিংকার পাওয়া যায়নি — kolom sysroot-এ 'bin/rust-lld' রাখো,                  অথবা Rust টুলচেইন ইনস্টল করো (KOLOM_SYSROOT দিয়ে পথ বদলানো যায়)",
+                )
+            }
         }
     };
     let runtime = match find_runtime_lib(target) {
@@ -329,12 +476,19 @@ pub fn link_executable_for(target: Target, obj_path: &Path, exe_path: &Path) -> 
     rustup target add {}",
                 target.triple()
             ),
+            Target::AndroidArm64 => "Android NDK পাওয়া যায়নি — ANDROID_NDK_HOME (বা ANDROID_HOME/ANDROID_SDK_ROOT) সেট করো".to_string(),
         });
     }
 
     let find_obj = |name: &str| lib_dirs.iter().map(|d| d.join(name)).find(|p| p.exists());
     let mut cmd = Command::new(&linker);
-    cmd.arg("-flavor").arg("gnu").arg("-o").arg(exe_path);
+    // `rust-lld` is a multi-personality binary that needs `-flavor` to say
+    // which linker it should behave as; the NDK's own `ld.lld` already *is*
+    // that one personality; passing `-flavor` to it is a parse error.
+    if target != Target::AndroidArm64 {
+        cmd.arg("-flavor").arg("gnu");
+    }
+    cmd.arg("-o").arg(exe_path);
     for d in &lib_dirs {
         cmd.arg(format!("-L{}", d.display()));
     }
@@ -376,6 +530,36 @@ pub fn link_executable_for(target: Target, obj_path: &Path, exe_path: &Path) -> 
                 cmd.arg(p);
             }
             if let Some(p) = find_obj("crtn.o") {
+                cmd.arg(p);
+            }
+        }
+        Target::AndroidArm64 => {
+            // Fully static, same reasoning as musl: `crtbegin_static.o` and
+            // a static `libc.a` both exist in this NDK, so a Kolom-built
+            // Android binary needs nothing shared at runtime beyond what
+            // the kernel itself provides — no `libc.so`/dynamic linker
+            // version to be compatible with.
+            let crtbegin = match find_obj("crtbegin_static.o") {
+                Some(p) => p,
+                None => return err("NDK-এর 'crtbegin_static.o' পাওয়া যায়নি — sysroot অসম্পূর্ণ বা ANDROID_NDK_HOME ভুল"),
+            };
+            cmd.arg("-m").arg("aarch64linux").arg("-static").arg("--strip-debug");
+            cmd.arg(&crtbegin);
+            cmd.arg(obj_path).arg(&runtime);
+            cmd.arg("-lc").arg("-lm").arg("-ldl");
+            // Bionic's libc.a itself calls into compiler-rt's atomic
+            // fallbacks (see `find_android_builtins`); a plain `ld.lld`
+            // invocation, unlike clang acting as a linker driver, does not
+            // add this automatically.
+            if let Some(ndk) = find_android_ndk() {
+                if let Some(rt) = find_android_builtins(&ndk) {
+                    cmd.arg(rt);
+                }
+                if let Some(uw) = find_android_libunwind(&ndk) {
+                    cmd.arg(uw);
+                }
+            }
+            if let Some(p) = find_obj("crtend_android.o") {
                 cmd.arg(p);
             }
         }

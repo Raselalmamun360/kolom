@@ -584,10 +584,8 @@ kolom বিল্ড main.ক windows
 # Linux binary (console mode)
 kolom বিল্ড main.ক linux
 
-# Android (console mode) — এখনো স্বয়ংসম্পূর্ণ নয়:
-# `--সি` ব্যাকএন্ড ও ইনস্টল করা NDK ক্রস-কম্পাইলার লাগে
-KLOM_CC=<NDK>/toolchains/llvm/prebuilt/<host>/bin/aarch64-linux-android21-clang \
-  kolom বিল্ড --সি main.ক android
+# Android (aarch64, console mode) — বিল্ড-মেশিনে NDK লাগে
+ANDROID_NDK_HOME=<NDK-এর পথ> kolom বিল্ড main.ক android
 
 # List all targets
 kolom টার্গেট

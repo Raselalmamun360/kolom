@@ -424,7 +424,19 @@ pub extern "C" fn kl_arr_decref(p: *mut u8) {
             if drop_addr != 0 {
                 let f: DropFn = std::mem::transmute(drop_addr as usize);
                 for i in 0..len {
-                    f(arr_data(p).add((i * es) as usize));
+                    // Each slot holds an 8-byte *pointer value* (every owning
+                    // element type is a single heap pointer) — the drop
+                    // function must be called on that stored pointer, not on
+                    // the address of the slot holding it. Passing the slot
+                    // address silently corrupted the element in place (it
+                    // was treated as an rc-header pointer and decremented),
+                    // which Windows' allocator tolerated well enough to
+                    // never visibly crash, but which Android's Scudo
+                    // allocator reliably caught as a heap corruption a few
+                    // frees later, at a call site that had nothing to do
+                    // with the array that actually caused it.
+                    let elem_slot = arr_data(p).add((i * es) as usize) as *const *mut u8;
+                    f(*elem_slot);
                 }
             }
             dealloc(p, Layout::from_size_align(ARR_HEADER + (cap as usize) * (es as usize), 8).unwrap());
@@ -470,8 +482,13 @@ pub extern "C" fn kl_shared_decref(p: *mut u8) {
             let drop_addr = *(p.add(8) as *const i64);
             let size = *(p.add(16) as *const i64);
             if drop_addr != 0 {
+                // Same bug, same fix as `kl_arr_decref`: the payload slot
+                // holds a pointer value (owning inner types are always one
+                // heap pointer), so the drop function needs that stored
+                // pointer, not the address of the slot.
                 let f: DropFn = std::mem::transmute(drop_addr as usize);
-                f(p.add(24));
+                let payload_slot = p.add(24) as *const *mut u8;
+                f(*payload_slot);
             }
             dealloc(p, Layout::from_size_align(24 + size as usize, 8).unwrap());
         }

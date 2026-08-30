@@ -392,16 +392,17 @@ fn cmd_target() -> ExitCode {
     println!("             কোনো বাইরের টুল লাগে না।");
     println!("  linux     Linux x64 — স্ট্যাটিক musl বাইনারি, কনসোল মোড");
     println!("             কোনো বাইরের টুল লাগে না।");
-    println!("  android   Android — এখনো স্বয়ংসম্পূর্ণ নয়।");
-    println!("             `--সি` ব্যাকএন্ড ও NDK ক্রস-কম্পাইলার দরকার,");
-    println!("             KLOM_CC দিয়ে সেটির পথ দিতে হবে।");
+    println!("  android   aarch64 (arm64-v8a) — স্ট্যাটিক বিল্ড, কনসোল মোড");
+    println!("             বিল্ড-মেশিনে Android NDK লাগে (Bionic কোনো Rust");
+    println!("             টুলচেইনের সাথে বান্ডলড আসে না, musl-এর মতো নয়) —");
+    println!("             ANDROID_NDK_HOME (বা ANDROID_HOME/ANDROID_SDK_ROOT)");
+    println!("             দিয়ে পথ দিতে হবে।");
     println!();
     println!("ব্যবহার: kolom বিল্ড <ফাইল> <টার্গেট>");
     println!("উদাহরণ:");
     println!("  kolom বিল্ড main.ক windows");
     println!("  kolom বিল্ড main.ক linux");
-    println!("  KLOM_CC=<NDK>/.../aarch64-linux-android21-clang \\");
-    println!("    kolom বিল্ড --সি main.ক android");
+    println!("  ANDROID_NDK_HOME=<NDK-এর পথ> kolom বিল্ড main.ক android");
     ExitCode::SUCCESS
 }
 

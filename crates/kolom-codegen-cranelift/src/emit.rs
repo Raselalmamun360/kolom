@@ -977,7 +977,7 @@ impl Gen {
         b.switch_to_block(body_blk);
         b.seal_block(body_blk);
         let idx_for_sep = b.use_var(idx_var);
-        let is_first = b.ins().icmp_imm(IntCC::Equal, idx_for_sep, 0);
+        let is_first = b.ins().icmp_imm_s(IntCC::Equal, idx_for_sep, 0);
         let sep_blk = b.create_block();
         let after_sep_blk = b.create_block();
         b.ins().brif(is_first, after_sep_blk, &[], sep_blk, &[]);
