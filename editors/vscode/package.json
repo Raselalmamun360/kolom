@@ -1,8 +1,8 @@
 {
   "name": "kolom",
   "displayName": "Kolom (কলম)",
-  "description": "Syntax highlighting for Kolom, a Bengali programming language",
-  "version": "0.1.0",
+  "description": "Syntax highlighting and diagnostics for Kolom, a Bengali programming language",
+  "version": "0.2.0",
   "publisher": "kolom-lang",
   "license": "MIT OR Apache-2.0",
   "repository": {
@@ -13,6 +13,7 @@
     "vscode": "^1.75.0"
   },
   "categories": ["Programming Languages"],
+  "main": "./out/extension.js",
   "contributes": {
     "languages": [
       {
@@ -28,6 +29,28 @@
         "scopeName": "source.kolom",
         "path": "./syntaxes/kolom.tmLanguage.json"
       }
-    ]
+    ],
+    "configuration": {
+      "title": "Kolom",
+      "properties": {
+        "kolom.lspPath": {
+          "type": "string",
+          "default": "",
+          "description": "Path to the kolom-lsp executable. Leave empty to auto-detect: looks next to whichever `kolom`/`kolom.exe` is on PATH first, then falls back to a bare `kolom-lsp` on PATH."
+        }
+      }
+    }
+  },
+  "scripts": {
+    "vscode:prepublish": "npm run compile",
+    "compile": "tsc -p ./"
+  },
+  "dependencies": {
+    "vscode-languageclient": "^9.0.1"
+  },
+  "devDependencies": {
+    "@types/node": "^20.11.0",
+    "@types/vscode": "^1.75.0",
+    "typescript": "^5.4.0"
   }
 }

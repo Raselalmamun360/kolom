@@ -123,10 +123,15 @@
       `didChange`/`didSave`/`didClose`-এ `publishDiagnostics` পাঠায়;
       Bengali ফাইল-এক্সটেনশন ও Windows ড্রাইভ-লেটার path-সহ real multi-file
       প্রজেক্টের বিরুদ্ধে যাচাই করা (`crates/kolom-lsp/tests/diagnostics.rs`)।
-      এখনও VS Code এক্সটেনশনে ক্লায়েন্ট হিসেবে wire করা হয়নি (শুধু static
-      সিনট্যাক্স হাইলাইটিং, LSP ক্লায়েন্ট কোড নেই)। বাকি: hover/go-to-
-      definition (এর জন্য `kolom_sema::analyze_typed`-এর `Types` টেবিল
-      আগে থেকেই আছে, শুধু ব্যবহার করা বাকি)।
+      এখন VS Code এক্সটেনশনে সরাসরি ক্লায়েন্ট হিসেবে wire করা
+      (`editors/vscode/src/extension.ts`, `vscode-languageclient` দিয়ে) —
+      `kolom-lsp` বাইনারি PATH-এর `kolom`-এর পাশে খোঁজে (`scripts/
+      make-sysroot.sh` এখন দুটোই বান্ডল করে), অথবা `kolom.lspPath`
+      সেটিং দিয়ে ওভাররাইড করা যায়। প্যাকেজ করে real VS Code-এ ইনস্টল
+      করে যাচাই করা — ভুল প্রোগ্রামে ঠিক জায়গায় স্কুইগল/lightbulb,
+      সঠিক প্রোগ্রামে কিছুই না। বাকি: hover/go-to-definition (এর জন্য
+      `kolom_sema::analyze_typed`-এর `Types` টেবিল আগে থেকেই আছে, শুধু
+      ব্যবহার করা বাকি)।
 - [x] বিল্ট-ইন টার্মিনাল এডিটর `কলম পাতা`/`kolom edit` (`crates/kolom-cli/src/editor.rs`) —
       `crossterm`-ভিত্তিক, C কম্পাইলার-নির্ভরতা ছাড়াই (`kolom-cli` নিজেই একটা
       সাধারণ Rust বাইনারি)। টাইপ করার সাথে সাথে লাইভ ত্রুটি (একই lex→parse→

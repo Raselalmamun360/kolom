@@ -19,9 +19,11 @@ kolom_io_test.txt
 *.pdb
 
 # --- VS Code extension build output ---------------------------------------
-# `editors/vscode/` is source (grammar, manifest); `vsce package` writes a
-# .vsix next to it, which is rebuildable and belongs on a release, not here.
+# `editors/vscode/` is source (grammar, manifest, TS client); `npm install`,
+# `tsc`, and `vsce package` all write rebuildable output here.
 /editors/vscode/*.vsix
+/editors/vscode/node_modules/
+/editors/vscode/out/
 
 # --- Editor / OS ----------------------------------------------------------
 .vscode/

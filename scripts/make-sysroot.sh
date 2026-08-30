@@ -5,6 +5,8 @@
 #
 # Produces:
 #   <out>/kolom.exe
+#   <out>/kolom-lsp.exe                 language server (editors/vscode looks
+#                                        for it next to kolom.exe)
 #   <out>/sysroot/libkolom_runtime.a    Kolom runtime (GNU ABI)
 #   <out>/sysroot/bin/rust-lld.exe      linker
 #   <out>/sysroot/lib/                  MinGW-w64 CRT objects + import libs
@@ -52,6 +54,8 @@ cd "$ROOT"
 FLAG=""; [ "$PROFILE" = "release" ] && FLAG="--release"
 say "building kolom.exe ($PROFILE)"
 cargo build $FLAG -p kolom-cli >/dev/null
+say "building kolom-lsp.exe ($PROFILE)"
+cargo build $FLAG -p kolom-lsp >/dev/null
 say "building runtime for $WIN_TARGET ($PROFILE)"
 cargo build $FLAG -p kolom-runtime --target "$WIN_TARGET" >/dev/null
 # Linux cross-target is optional: only bundle it if the target is installed.
@@ -67,6 +71,7 @@ fi
 rm -rf "$OUT"
 mkdir -p "$OUT/sysroot/bin" "$OUT/sysroot/lib"
 cp "target/$PROFILE/kolom.exe" "$OUT/"
+cp "target/$PROFILE/kolom-lsp.exe" "$OUT/"
 cp "$LLD" "$OUT/sysroot/bin/"
 
 # Windows runtime, both at the sysroot root (host layout) and under its
