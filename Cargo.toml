@@ -9,6 +9,7 @@ members = [
     "crates/kolom-codegen-cranelift",
     "crates/kolom-interp",
     "crates/kolom-cli",
+    "crates/kolom-lsp",
 ]
 
 [profile.release]

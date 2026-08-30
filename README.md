@@ -85,7 +85,7 @@ kolom বিল্ড আমার_প্রকল্প/main.ক linux    # Lin
 | Linux/Android নেটিভ UI | ⏳ পরিকল্পিত (কনসোল মোড কাজ করে) |
 | macOS | ⏳ পরিকল্পিত |
 | VS Code সিনট্যাক্স হাইলাইটিং | ✅ [`editors/vscode`](editors/vscode) |
-| IDE এক্সটেনশন (ত্রুটি/LSP) | ⏳ পরিকল্পিত |
+| LSP (ত্রুটি) | ✅ `kolom-lsp` — এখনও VS Code এক্সটেনশনে wire করা হয়নি |
 
 ## কীভাবে কাজ করে
 

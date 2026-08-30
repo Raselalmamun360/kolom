@@ -117,11 +117,16 @@
 - [~] মডিউল সিস্টেম (user `.ক` imports resolved from same dir; package registry future)
 - [~] IDE এক্সটেনশন — VS Code সিনট্যাক্স হাইলাইটিং সম্পূর্ণ (`editors/vscode`),
       সব ৪০টি কীওয়ার্ড কভার করে, বাস্তব উদাহরণের বিপরীতে vscode-textmate
-      দিয়ে টোকেন-বাই-টোকেন যাচাই করা। বাকি: ত্রুটি/হোভার/go-to-definition
-      দেখানোর জন্য একটি LSP — `kolom-sema::analyze_typed` আগে থেকেই
-      line/col-সহ `Diagnostic` ও প্রতিটি এক্সপ্রেশনের ইনফার করা টাইপ
-      (`Types` টেবিল) ফেরত দেয়, তাই কম্পাইলার দিক থেকে বেশিরভাগ কাজ
-      আগে থেকেই আছে।
+      দিয়ে টোকেন-বাই-টোকেন যাচাই করা। `kolom-lsp` ক্রেট (diagnostics-only,
+      v1) সম্পূর্ণ — real `Content-Length`-framed JSON-RPC, lex→parse→
+      module-resolve→sema পাইপলাইন চালিয়ে `textDocument/didOpen`/
+      `didChange`/`didSave`/`didClose`-এ `publishDiagnostics` পাঠায়;
+      Bengali ফাইল-এক্সটেনশন ও Windows ড্রাইভ-লেটার path-সহ real multi-file
+      প্রজেক্টের বিরুদ্ধে যাচাই করা (`crates/kolom-lsp/tests/diagnostics.rs`)।
+      এখনও VS Code এক্সটেনশনে ক্লায়েন্ট হিসেবে wire করা হয়নি (শুধু static
+      সিনট্যাক্স হাইলাইটিং, LSP ক্লায়েন্ট কোড নেই)। বাকি: hover/go-to-
+      definition (এর জন্য `kolom_sema::analyze_typed`-এর `Types` টেবিল
+      আগে থেকেই আছে, শুধু ব্যবহার করা বাকি)।
 
 ---
 
