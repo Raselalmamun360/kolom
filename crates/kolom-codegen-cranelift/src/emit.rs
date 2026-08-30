@@ -109,6 +109,10 @@ const FALLIBLE_RT: &[&str] = &[
     "kl_mat_inv",
     "kl_mat_identity",
     "kl_mat_zeros",
+    "kl_geo_polygon_area",
+    "kl_geo_regular_polygon",
+    "kl_geo_ellipse_points",
+    "kl_geo_line_intersect",
 ];
 
 #[derive(Clone)]
@@ -1725,6 +1729,115 @@ impl Gen {
                 Ok(CVal::Arr(self.call_rt(b, "kl_mat_zeros", &[rows, cols]), Box::new(Ty::Arr(Box::new(Ty::Dec)))))
             }
 
+            // জ্যামিতি — বিন্দু = দশমিক[] ([x, y]), বহুভুজ = দশমিক[][]
+            ("জ্যামিতি", "দূরত্ব") => {
+                let x1 = self.lower_expr_dec(b, &args[0], env)?;
+                let y1 = self.lower_expr_dec(b, &args[1], env)?;
+                let x2 = self.lower_expr_dec(b, &args[2], env)?;
+                let y2 = self.lower_expr_dec(b, &args[3], env)?;
+                Ok(CVal::Dec(self.call_rt(b, "kl_geo_distance", &[x1, y1, x2, y2])))
+            }
+            ("জ্যামিতি", "কোণ") => {
+                let x1 = self.lower_expr_dec(b, &args[0], env)?;
+                let y1 = self.lower_expr_dec(b, &args[1], env)?;
+                let x2 = self.lower_expr_dec(b, &args[2], env)?;
+                let y2 = self.lower_expr_dec(b, &args[3], env)?;
+                Ok(CVal::Dec(self.call_rt(b, "kl_geo_angle", &[x1, y1, x2, y2])))
+            }
+            ("জ্যামিতি", "ঘোরানো") => {
+                let x = self.lower_expr_dec(b, &args[0], env)?;
+                let y = self.lower_expr_dec(b, &args[1], env)?;
+                let cx = self.lower_expr_dec(b, &args[2], env)?;
+                let cy = self.lower_expr_dec(b, &args[3], env)?;
+                let angle = self.lower_expr_dec(b, &args[4], env)?;
+                Ok(CVal::Arr(self.call_rt(b, "kl_geo_rotate", &[x, y, cx, cy, angle]), Box::new(Ty::Dec)))
+            }
+            ("জ্যামিতি", "বৃত্তের_ক্ষেত্রফল") => {
+                let r = self.lower_expr_dec(b, &args[0], env)?;
+                Ok(CVal::Dec(self.call_rt(b, "kl_geo_circle_area", &[r])))
+            }
+            ("জ্যামিতি", "বৃত্তের_পরিধি") => {
+                let r = self.lower_expr_dec(b, &args[0], env)?;
+                Ok(CVal::Dec(self.call_rt(b, "kl_geo_circle_circumference", &[r])))
+            }
+            ("জ্যামিতি", "উপবৃত্তের_ক্ষেত্রফল") => {
+                let rx = self.lower_expr_dec(b, &args[0], env)?;
+                let ry = self.lower_expr_dec(b, &args[1], env)?;
+                Ok(CVal::Dec(self.call_rt(b, "kl_geo_ellipse_area", &[rx, ry])))
+            }
+            ("জ্যামিতি", "উপবৃত্তের_পরিধি") => {
+                let rx = self.lower_expr_dec(b, &args[0], env)?;
+                let ry = self.lower_expr_dec(b, &args[1], env)?;
+                Ok(CVal::Dec(self.call_rt(b, "kl_geo_ellipse_circumference", &[rx, ry])))
+            }
+            ("জ্যামিতি", "ত্রিভুজের_ক্ষেত্রফল") => {
+                let x1 = self.lower_expr_dec(b, &args[0], env)?;
+                let y1 = self.lower_expr_dec(b, &args[1], env)?;
+                let x2 = self.lower_expr_dec(b, &args[2], env)?;
+                let y2 = self.lower_expr_dec(b, &args[3], env)?;
+                let x3 = self.lower_expr_dec(b, &args[4], env)?;
+                let y3 = self.lower_expr_dec(b, &args[5], env)?;
+                Ok(CVal::Dec(self.call_rt(b, "kl_geo_triangle_area", &[x1, y1, x2, y2, x3, y3])))
+            }
+            ("জ্যামিতি", "বহুভুজের_ক্ষেত্রফল") => {
+                let pts = self.lower_expr_arr(b, &args[0], env)?;
+                Ok(CVal::Dec(self.call_rt(b, "kl_geo_polygon_area", &[pts])))
+            }
+            ("জ্যামিতি", "গোলকের_আয়তন") => {
+                let r = self.lower_expr_dec(b, &args[0], env)?;
+                Ok(CVal::Dec(self.call_rt(b, "kl_geo_sphere_volume", &[r])))
+            }
+            ("জ্যামিতি", "গোলকের_পৃষ্ঠফল") => {
+                let r = self.lower_expr_dec(b, &args[0], env)?;
+                Ok(CVal::Dec(self.call_rt(b, "kl_geo_sphere_surface", &[r])))
+            }
+            ("জ্যামিতি", "শঙ্কুর_আয়তন") => {
+                let r = self.lower_expr_dec(b, &args[0], env)?;
+                let h = self.lower_expr_dec(b, &args[1], env)?;
+                Ok(CVal::Dec(self.call_rt(b, "kl_geo_cone_volume", &[r, h])))
+            }
+            ("জ্যামিতি", "শঙ্কুর_পৃষ্ঠফল") => {
+                let r = self.lower_expr_dec(b, &args[0], env)?;
+                let h = self.lower_expr_dec(b, &args[1], env)?;
+                Ok(CVal::Dec(self.call_rt(b, "kl_geo_cone_surface", &[r, h])))
+            }
+            ("জ্যামিতি", "সিলিন্ডারের_আয়তন") => {
+                let r = self.lower_expr_dec(b, &args[0], env)?;
+                let h = self.lower_expr_dec(b, &args[1], env)?;
+                Ok(CVal::Dec(self.call_rt(b, "kl_geo_cylinder_volume", &[r, h])))
+            }
+            ("জ্যামিতি", "সিলিন্ডারের_পৃষ্ঠফল") => {
+                let r = self.lower_expr_dec(b, &args[0], env)?;
+                let h = self.lower_expr_dec(b, &args[1], env)?;
+                Ok(CVal::Dec(self.call_rt(b, "kl_geo_cylinder_surface", &[r, h])))
+            }
+            ("জ্যামিতি", "নিয়মিত_বহুভুজ") => {
+                let cx = self.lower_expr_dec(b, &args[0], env)?;
+                let cy = self.lower_expr_dec(b, &args[1], env)?;
+                let r = self.lower_expr_dec(b, &args[2], env)?;
+                let n = self.lower_expr_num(b, &args[3], env)?;
+                Ok(CVal::Arr(self.call_rt(b, "kl_geo_regular_polygon", &[cx, cy, r, n]), Box::new(Ty::Arr(Box::new(Ty::Dec)))))
+            }
+            ("জ্যামিতি", "উপবৃত্ত_বিন্দু") => {
+                let cx = self.lower_expr_dec(b, &args[0], env)?;
+                let cy = self.lower_expr_dec(b, &args[1], env)?;
+                let rx = self.lower_expr_dec(b, &args[2], env)?;
+                let ry = self.lower_expr_dec(b, &args[3], env)?;
+                let n = self.lower_expr_num(b, &args[4], env)?;
+                Ok(CVal::Arr(self.call_rt(b, "kl_geo_ellipse_points", &[cx, cy, rx, ry, n]), Box::new(Ty::Arr(Box::new(Ty::Dec)))))
+            }
+            ("জ্যামিতি", "রেখার_ছেদ") => {
+                let x1 = self.lower_expr_dec(b, &args[0], env)?;
+                let y1 = self.lower_expr_dec(b, &args[1], env)?;
+                let x2 = self.lower_expr_dec(b, &args[2], env)?;
+                let y2 = self.lower_expr_dec(b, &args[3], env)?;
+                let x3 = self.lower_expr_dec(b, &args[4], env)?;
+                let y3 = self.lower_expr_dec(b, &args[5], env)?;
+                let x4 = self.lower_expr_dec(b, &args[6], env)?;
+                let y4 = self.lower_expr_dec(b, &args[7], env)?;
+                Ok(CVal::Arr(self.call_rt(b, "kl_geo_line_intersect", &[x1, y1, x2, y2, x3, y3, x4, y4]), Box::new(Ty::Dec)))
+            }
+
             _ => Err(format!(
                 "M4 codegen: '{}.{}' এখনো সমর্থিত নয় (গ্রাফিক্স UI ইঞ্জিনের অংশ)",
                 module, item
@@ -2693,6 +2806,25 @@ pub fn emit_for(prog: &Program, target: crate::link::Target) -> Result<Vec<u8>, 
         ("kl_mat_inv", &[ptr_ty], &[ptr_ty]),
         ("kl_mat_identity", &[i64t], &[ptr_ty]),
         ("kl_mat_zeros", &[i64t, i64t], &[ptr_ty]),
+        // জ্যামিতি
+        ("kl_geo_distance", &[f64t, f64t, f64t, f64t], &[f64t]),
+        ("kl_geo_angle", &[f64t, f64t, f64t, f64t], &[f64t]),
+        ("kl_geo_rotate", &[f64t, f64t, f64t, f64t, f64t], &[ptr_ty]),
+        ("kl_geo_circle_area", &[f64t], &[f64t]),
+        ("kl_geo_circle_circumference", &[f64t], &[f64t]),
+        ("kl_geo_ellipse_area", &[f64t, f64t], &[f64t]),
+        ("kl_geo_ellipse_circumference", &[f64t, f64t], &[f64t]),
+        ("kl_geo_triangle_area", &[f64t, f64t, f64t, f64t, f64t, f64t], &[f64t]),
+        ("kl_geo_polygon_area", &[ptr_ty], &[f64t]),
+        ("kl_geo_sphere_volume", &[f64t], &[f64t]),
+        ("kl_geo_sphere_surface", &[f64t], &[f64t]),
+        ("kl_geo_cone_volume", &[f64t, f64t], &[f64t]),
+        ("kl_geo_cone_surface", &[f64t, f64t], &[f64t]),
+        ("kl_geo_cylinder_volume", &[f64t, f64t], &[f64t]),
+        ("kl_geo_cylinder_surface", &[f64t, f64t], &[f64t]),
+        ("kl_geo_regular_polygon", &[f64t, f64t, f64t, i64t], &[ptr_ty]),
+        ("kl_geo_ellipse_points", &[f64t, f64t, f64t, f64t, i64t], &[ptr_ty]),
+        ("kl_geo_line_intersect", &[f64t, f64t, f64t, f64t, f64t, f64t, f64t, f64t], &[ptr_ty]),
     ];
     let mut rt = HashMap::new();
     for (name, params, rets) in stdlib_imports {

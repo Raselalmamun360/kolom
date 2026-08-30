@@ -1227,6 +1227,89 @@ impl<'o> Interp<'o> {
                 Ok(matf_val(vec![vec![0.0; *cols as usize]; *rows as usize]))
             }
 
+            // জ্যামিতি — বিন্দু = [x, y] (দশমিক[]), বহুভুজ = বিন্দুর তালিকা
+            // (দশমিক[][]) — ম্যাট্রিক্সের ভেক্টর/ম্যাট্রিক্স কনভেনশন অনুসরণ করে।
+            ("জ্যামিতি", "দূরত্ব", [x1, y1, x2, y2]) => {
+                let (x1, y1, x2, y2) = (num_f(x1)?, num_f(y1)?, num_f(x2)?, num_f(y2)?);
+                Ok(Value::Dec(((x2 - x1).powi(2) + (y2 - y1).powi(2)).sqrt()))
+            }
+            ("জ্যামিতি", "কোণ", [x1, y1, x2, y2]) => {
+                let (x1, y1, x2, y2) = (num_f(x1)?, num_f(y1)?, num_f(x2)?, num_f(y2)?);
+                Ok(Value::Dec((y2 - y1).atan2(x2 - x1)))
+            }
+            ("জ্যামিতি", "ঘোরানো", [x, y, cx, cy, angle]) => {
+                let (x, y, cx, cy, angle) = (num_f(x)?, num_f(y)?, num_f(cx)?, num_f(cy)?, num_f(angle)?);
+                let (dx, dy) = (x - cx, y - cy);
+                let (sin, cos) = angle.sin_cos();
+                Ok(vecf_val(vec![cx + dx * cos - dy * sin, cy + dx * sin + dy * cos]))
+            }
+            ("জ্যামিতি", "বৃত্তের_ক্ষেত্রফল", [r]) => Ok(Value::Dec(std::f64::consts::PI * num_f(r)?.powi(2))),
+            ("জ্যামিতি", "বৃত্তের_পরিধি", [r]) => Ok(Value::Dec(2.0 * std::f64::consts::PI * num_f(r)?)),
+            ("জ্যামিতি", "উপবৃত্তের_ক্ষেত্রফল", [rx, ry]) => {
+                Ok(Value::Dec(std::f64::consts::PI * num_f(rx)? * num_f(ry)?))
+            }
+            // রামানুজনের আসন্নীকরণ — উপবৃত্তের পরিধির কোনো প্রাথমিক সূত্র নেই
+            // (উপবৃত্তীয় ইন্টিগ্রাল লাগে), কিন্তু এটা সব rx/ry অনুপাতে
+            // ব্যবহারিক নির্ভুলতার মধ্যে থাকে।
+            ("জ্যামিতি", "উপবৃত্তের_পরিধি", [rx, ry]) => {
+                let (rx, ry) = (num_f(rx)?, num_f(ry)?);
+                let h = ((rx - ry) / (rx + ry)).powi(2);
+                Ok(Value::Dec(std::f64::consts::PI * (rx + ry) * (1.0 + 3.0 * h / (10.0 + (4.0 - 3.0 * h).sqrt()))))
+            }
+            ("জ্যামিতি", "ত্রিভুজের_ক্ষেত্রফল", [x1, y1, x2, y2, x3, y3]) => {
+                let (x1, y1, x2, y2, x3, y3) = (num_f(x1)?, num_f(y1)?, num_f(x2)?, num_f(y2)?, num_f(x3)?, num_f(y3)?);
+                Ok(Value::Dec((x1 * (y2 - y3) + x2 * (y3 - y1) + x3 * (y1 - y2)).abs() / 2.0))
+            }
+            ("জ্যামিতি", "বহুভুজের_ক্ষেত্রফল", [points]) => {
+                let pts = to_matf(points)?;
+                if pts.len() < 3 || pts.iter().any(|p| p.len() != 2) {
+                    return Err(err(pos, "বহুভুজের_ক্ষেত্রফল: কমপক্ষে ৩টি [x, y] বিন্দু দরকার"));
+                }
+                Ok(Value::Dec(poly_area(&pts)))
+            }
+            ("জ্যামিতি", "গোলকের_আয়তন", [r]) => {
+                Ok(Value::Dec(4.0 / 3.0 * std::f64::consts::PI * num_f(r)?.powi(3)))
+            }
+            ("জ্যামিতি", "গোলকের_পৃষ্ঠফল", [r]) => Ok(Value::Dec(4.0 * std::f64::consts::PI * num_f(r)?.powi(2))),
+            ("জ্যামিতি", "শঙ্কুর_আয়তন", [r, h]) => {
+                Ok(Value::Dec(std::f64::consts::PI * num_f(r)?.powi(2) * num_f(h)? / 3.0))
+            }
+            ("জ্যামিতি", "শঙ্কুর_পৃষ্ঠফল", [r, h]) => {
+                let (r, h) = (num_f(r)?, num_f(h)?);
+                Ok(Value::Dec(std::f64::consts::PI * r * (r + (r * r + h * h).sqrt())))
+            }
+            ("জ্যামিতি", "সিলিন্ডারের_আয়তন", [r, h]) => {
+                Ok(Value::Dec(std::f64::consts::PI * num_f(r)?.powi(2) * num_f(h)?))
+            }
+            ("জ্যামিতি", "সিলিন্ডারের_পৃষ্ঠফল", [r, h]) => {
+                let (r, h) = (num_f(r)?, num_f(h)?);
+                Ok(Value::Dec(2.0 * std::f64::consts::PI * r * (r + h)))
+            }
+            ("জ্যামিতি", "নিয়মিত_বহুভুজ", [cx, cy, r, Value::Num(n)]) => {
+                if *n < 3 {
+                    return Err(err(pos, "নিয়মিত_বহুভুজ: কমপক্ষে ৩ বাহু দরকার"));
+                }
+                let (cx, cy, r) = (num_f(cx)?, num_f(cy)?, num_f(r)?);
+                Ok(matf_val(regular_polygon(cx, cy, r, r, *n)))
+            }
+            ("জ্যামিতি", "উপবৃত্ত_বিন্দু", [cx, cy, rx, ry, Value::Num(n)]) => {
+                if *n < 3 {
+                    return Err(err(pos, "উপবৃত্ত_বিন্দু: কমপক্ষে ৩টি বিন্দু দরকার"));
+                }
+                let (cx, cy, rx, ry) = (num_f(cx)?, num_f(cy)?, num_f(rx)?, num_f(ry)?);
+                Ok(matf_val(regular_polygon(cx, cy, rx, ry, *n)))
+            }
+            ("জ্যামিতি", "রেখার_ছেদ", [x1, y1, x2, y2, x3, y3, x4, y4]) => {
+                let (x1, y1, x2, y2) = (num_f(x1)?, num_f(y1)?, num_f(x2)?, num_f(y2)?);
+                let (x3, y3, x4, y4) = (num_f(x3)?, num_f(y3)?, num_f(x4)?, num_f(y4)?);
+                let denom = (x1 - x2) * (y3 - y4) - (y1 - y2) * (x3 - x4);
+                if denom.abs() < 1e-12 {
+                    return Err(err(pos, "রেখার_ছেদ: রেখা দুটি সমান্তরাল, কোনো ছেদবিন্দু নেই"));
+                }
+                let t = ((x1 - x3) * (y3 - y4) - (y1 - y3) * (x3 - x4)) / denom;
+                Ok(vecf_val(vec![x1 + t * (x2 - x1), y1 + t * (y2 - y1)]))
+            }
+
             // গ্রাফিক্স — ইন্টারপ্রেটেড মোডে আঁকা no-op
             ("গ্রাফিক্স", _, _) => Ok(Value::Null),
 
@@ -1787,6 +1870,32 @@ fn mat_inv(m: Vec<Vec<f64>>) -> Option<Vec<Vec<f64>>> {
         }
     }
     Some(aug.into_iter().map(|row| row[n..].to_vec()).collect())
+}
+
+// Shoelace formula. Caller (জ্যামিতি.বহুভুজের_ক্ষেত্রফল) has already checked
+// `points.len() >= 3` and that every point is `[x, y]`.
+fn poly_area(points: &[Vec<f64>]) -> f64 {
+    let n = points.len();
+    let sum: f64 = (0..n)
+        .map(|i| {
+            let (x1, y1) = (points[i][0], points[i][1]);
+            let (x2, y2) = (points[(i + 1) % n][0], points[(i + 1) % n][1]);
+            x1 * y2 - x2 * y1
+        })
+        .sum();
+    sum.abs() / 2.0
+}
+
+// `n` evenly spaced points on the ellipse centered at `(cx, cy)` with radii
+// `(rx, ry)` — a circle when `rx == ry`. Shared by নিয়মিত_বহুভুজ (rx == ry)
+// and উপবৃত্ত_বিন্দু.
+fn regular_polygon(cx: f64, cy: f64, rx: f64, ry: f64, n: i64) -> Vec<Vec<f64>> {
+    (0..n)
+        .map(|i| {
+            let angle = 2.0 * std::f64::consts::PI * (i as f64) / (n as f64);
+            vec![cx + rx * angle.cos(), cy + ry * angle.sin()]
+        })
+        .collect()
 }
 
 fn values_eq(l: &Value, r: &Value) -> bool {

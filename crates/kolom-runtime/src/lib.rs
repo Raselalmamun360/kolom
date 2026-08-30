@@ -1753,3 +1753,150 @@ pub extern "C" fn kl_mat_zeros(rows: i64, cols: i64) -> *mut u8 {
     }
     arr_from_matf(&vec![vec![0.0; cols as usize]; rows as usize])
 }
+
+// ============================================================================
+// জ্যামিতি (geometry) — বিন্দু = `[x, y]` (দশমিক[]), বহুভুজ = বিন্দুর তালিকা
+// (দশমিক[][]) — ম্যাট্রিক্স-এর ভেক্টর/ম্যাট্রিক্স রিপ্রেজেন্টেশন ও
+// vecf_from_arr/arr_from_vecf/matf_from_arr হেল্পার পুনর্ব্যবহার করে।
+// ============================================================================
+
+const PI: f64 = std::f64::consts::PI;
+
+#[no_mangle]
+pub extern "C" fn kl_geo_distance(x1: f64, y1: f64, x2: f64, y2: f64) -> f64 {
+    ((x2 - x1).powi(2) + (y2 - y1).powi(2)).sqrt()
+}
+
+#[no_mangle]
+pub extern "C" fn kl_geo_angle(x1: f64, y1: f64, x2: f64, y2: f64) -> f64 {
+    (y2 - y1).atan2(x2 - x1)
+}
+
+#[no_mangle]
+pub extern "C" fn kl_geo_rotate(x: f64, y: f64, cx: f64, cy: f64, angle: f64) -> *mut u8 {
+    let (dx, dy) = (x - cx, y - cy);
+    let (sin, cos) = angle.sin_cos();
+    arr_from_vecf(&[cx + dx * cos - dy * sin, cy + dx * sin + dy * cos])
+}
+
+#[no_mangle]
+pub extern "C" fn kl_geo_circle_area(r: f64) -> f64 {
+    PI * r * r
+}
+
+#[no_mangle]
+pub extern "C" fn kl_geo_circle_circumference(r: f64) -> f64 {
+    2.0 * PI * r
+}
+
+#[no_mangle]
+pub extern "C" fn kl_geo_ellipse_area(rx: f64, ry: f64) -> f64 {
+    PI * rx * ry
+}
+
+/// Ramanujan's first approximation — an ellipse's circumference has no
+/// elementary closed form (it needs an elliptic integral), but this stays
+/// within practical accuracy across every rx/ry ratio.
+#[no_mangle]
+pub extern "C" fn kl_geo_ellipse_circumference(rx: f64, ry: f64) -> f64 {
+    let h = ((rx - ry) / (rx + ry)).powi(2);
+    PI * (rx + ry) * (1.0 + 3.0 * h / (10.0 + (4.0 - 3.0 * h).sqrt()))
+}
+
+#[no_mangle]
+pub extern "C" fn kl_geo_triangle_area(x1: f64, y1: f64, x2: f64, y2: f64, x3: f64, y3: f64) -> f64 {
+    (x1 * (y2 - y3) + x2 * (y3 - y1) + x3 * (y1 - y2)).abs() / 2.0
+}
+
+/// Shoelace formula. `points` must be at least 3 rows of exactly 2 columns —
+/// checked here since a `দশমিক[][]` value carries no shape guarantee.
+#[no_mangle]
+pub extern "C" fn kl_geo_polygon_area(points: *mut u8) -> f64 {
+    let pts = unsafe { matf_from_arr(points) };
+    if pts.len() < 3 || pts.iter().any(|p| p.len() != 2) {
+        fail("বহুভুজের_ক্ষেত্রফল: কমপক্ষে ৩টি [x, y] বিন্দু দরকার".into());
+        return 0.0;
+    }
+    let n = pts.len();
+    let sum: f64 = (0..n)
+        .map(|i| {
+            let (x1, y1) = (pts[i][0], pts[i][1]);
+            let (x2, y2) = (pts[(i + 1) % n][0], pts[(i + 1) % n][1]);
+            x1 * y2 - x2 * y1
+        })
+        .sum();
+    sum.abs() / 2.0
+}
+
+#[no_mangle]
+pub extern "C" fn kl_geo_sphere_volume(r: f64) -> f64 {
+    4.0 / 3.0 * PI * r.powi(3)
+}
+
+#[no_mangle]
+pub extern "C" fn kl_geo_sphere_surface(r: f64) -> f64 {
+    4.0 * PI * r * r
+}
+
+#[no_mangle]
+pub extern "C" fn kl_geo_cone_volume(r: f64, h: f64) -> f64 {
+    PI * r * r * h / 3.0
+}
+
+/// Total surface area (base + lateral).
+#[no_mangle]
+pub extern "C" fn kl_geo_cone_surface(r: f64, h: f64) -> f64 {
+    PI * r * (r + (r * r + h * h).sqrt())
+}
+
+#[no_mangle]
+pub extern "C" fn kl_geo_cylinder_volume(r: f64, h: f64) -> f64 {
+    PI * r * r * h
+}
+
+#[no_mangle]
+pub extern "C" fn kl_geo_cylinder_surface(r: f64, h: f64) -> f64 {
+    2.0 * PI * r * (r + h)
+}
+
+/// `n` evenly spaced points on the ellipse centered at `(cx, cy)` with radii
+/// `(rx, ry)` — shared body behind নিয়মিত_বহুভুজ (rx == ry) and উপবৃত্ত_বিন্দু.
+fn ellipse_points(cx: f64, cy: f64, rx: f64, ry: f64, n: i64) -> Vec<Vec<f64>> {
+    (0..n)
+        .map(|i| {
+            let angle = 2.0 * PI * (i as f64) / (n as f64);
+            vec![cx + rx * angle.cos(), cy + ry * angle.sin()]
+        })
+        .collect()
+}
+
+#[no_mangle]
+pub extern "C" fn kl_geo_regular_polygon(cx: f64, cy: f64, r: f64, n: i64) -> *mut u8 {
+    if n < 3 {
+        fail("নিয়মিত_বহুভুজ: কমপক্ষে ৩ বাহু দরকার".into());
+        return arr_from_matf(&[]);
+    }
+    arr_from_matf(&ellipse_points(cx, cy, r, r, n))
+}
+
+#[no_mangle]
+pub extern "C" fn kl_geo_ellipse_points(cx: f64, cy: f64, rx: f64, ry: f64, n: i64) -> *mut u8 {
+    if n < 3 {
+        fail("উপবৃত্ত_বিন্দু: কমপক্ষে ৩টি বিন্দু দরকার".into());
+        return arr_from_matf(&[]);
+    }
+    arr_from_matf(&ellipse_points(cx, cy, rx, ry, n))
+}
+
+/// Intersection of the two *infinite* lines through `(x1,y1)-(x2,y2)` and
+/// `(x3,y3)-(x4,y4)` — not clipped to either segment.
+#[no_mangle]
+pub extern "C" fn kl_geo_line_intersect(x1: f64, y1: f64, x2: f64, y2: f64, x3: f64, y3: f64, x4: f64, y4: f64) -> *mut u8 {
+    let denom = (x1 - x2) * (y3 - y4) - (y1 - y2) * (x3 - x4);
+    if denom.abs() < 1e-12 {
+        fail("রেখার_ছেদ: রেখা দুটি সমান্তরাল, কোনো ছেদবিন্দু নেই".into());
+        return arr_from_vecf(&[0.0, 0.0]);
+    }
+    let t = ((x1 - x3) * (y3 - y4) - (y1 - y3) * (x3 - x4)) / denom;
+    arr_from_vecf(&[x1 + t * (x2 - x1), y1 + t * (y2 - y1)])
+}

@@ -58,3 +58,15 @@ fn matrix_unsupported_under_legacy_backend() {
     let msg = emit_would_panic(src);
     assert!(msg.contains("নির্ণায়ক"), "panic message should name the unsupported function: {msg:?}");
 }
+
+/// Like `ম্যাট্রিক্স`, `জ্যামিতি` gets no legacy-backend investment at all —
+/// the native compiler and interpreter are Kolom's two real execution paths;
+/// `--সি` is legacy/non-default and not worth partial (scalar-only) support
+/// for the sake of parity with the point/polygon functions that would still
+/// need the same নেস্টেড-অ্যারে marshalling `ম্যাট্রিক্স` never got here.
+#[test]
+fn geometry_unsupported_under_legacy_backend() {
+    let src = "ইম্পোর্ট জ্যামিতি\n\nঅ্যাপ {\n    ধরি ক = জ্যামিতি.দূরত্ব(0.0, 0.0, 3.0, 4.0)\n}\n";
+    let msg = emit_would_panic(src);
+    assert!(msg.contains("দূরত্ব"), "panic message should name the unsupported function: {msg:?}");
+}

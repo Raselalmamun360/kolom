@@ -1,6 +1,6 @@
 //! Milestone-3 acceptance test: standard library (গণিত/লেখা/ফাইল/র‍্যান্ডম/
-//! ফাইলসিস্টেম/জেসন/ম্যাট্রিক্স) + real `ম্যাপ[K,V]`, checked against the
-//! interpreter's reference `expected.txt` files.
+//! ফাইলসিস্টেম/জেসন/ম্যাট্রিক্স/জ্যামিতি) + real `ম্যাপ[K,V]`, checked
+//! against the interpreter's reference `expected.txt` files.
 //!
 //! নেটওয়ার্ক has no fixture and গ্রাফিক্স is covered by golden_m4 (it needs
 //! the UI engine), so neither appears here.
@@ -64,6 +64,11 @@ fn golden_42_stdlib_path() {
 #[test]
 fn golden_43_stdlib_matrix() {
     assert_matches_reference("43_stdlib_matrix");
+}
+
+#[test]
+fn golden_44_stdlib_geometry() {
+    assert_matches_reference("44_stdlib_geometry");
 }
 
 /// র‍্যান্ডম is the one fixture that cannot use the shared reference: this
