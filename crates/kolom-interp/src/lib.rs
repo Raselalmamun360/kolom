@@ -1310,6 +1310,83 @@ impl<'o> Interp<'o> {
                 Ok(vecf_val(vec![x1 + t * (x2 - x1), y1 + t * (y2 - y1)]))
             }
 
+            // পরিসংখ্যান
+            ("পরিসংখ্যান", "সমষ্টি", [v]) => {
+                let v = to_vecf(v)?;
+                if v.is_empty() {
+                    return Err(err(pos, "সমষ্টি: খালি ভেক্টরে সংজ্ঞায়িত নয়"));
+                }
+                Ok(Value::Dec(v.iter().sum()))
+            }
+            ("পরিসংখ্যান", "গড়", [v]) => {
+                let v = to_vecf(v)?;
+                if v.is_empty() {
+                    return Err(err(pos, "গড়: খালি ভেক্টরে সংজ্ঞায়িত নয়"));
+                }
+                Ok(Value::Dec(stat_mean(&v)))
+            }
+            ("পরিসংখ্যান", "মধ্যক", [v]) => {
+                let v = to_vecf(v)?;
+                if v.is_empty() {
+                    return Err(err(pos, "মধ্যক: খালি ভেক্টরে সংজ্ঞায়িত নয়"));
+                }
+                Ok(Value::Dec(stat_median(&v)))
+            }
+            ("পরিসংখ্যান", "প্রচুরক", [v]) => {
+                let v = to_vecf(v)?;
+                if v.is_empty() {
+                    return Err(err(pos, "প্রচুরক: খালি ভেক্টরে সংজ্ঞায়িত নয়"));
+                }
+                Ok(Value::Dec(stat_mode(&v)))
+            }
+            ("পরিসংখ্যান", "ভেদাংক", [v]) => {
+                let v = to_vecf(v)?;
+                if v.is_empty() {
+                    return Err(err(pos, "ভেদাংক: খালি ভেক্টরে সংজ্ঞায়িত নয়"));
+                }
+                Ok(Value::Dec(stat_variance(&v)))
+            }
+            ("পরিসংখ্যান", "আদর্শ_বিচ্যুতি", [v]) => {
+                let v = to_vecf(v)?;
+                if v.is_empty() {
+                    return Err(err(pos, "আদর্শ_বিচ্যুতি: খালি ভেক্টরে সংজ্ঞায়িত নয়"));
+                }
+                Ok(Value::Dec(stat_variance(&v).sqrt()))
+            }
+            ("পরিসংখ্যান", "সহভেদাংক", [a, b]) => {
+                let (a, b) = (to_vecf(a)?, to_vecf(b)?);
+                if a.len() != b.len() || a.len() < 2 {
+                    return Err(err(pos, "সহভেদাংক: দুই ভেক্টরের দৈর্ঘ্য সমান ও কমপক্ষে ২ হতে হবে"));
+                }
+                Ok(Value::Dec(stat_covariance(&a, &b)))
+            }
+            ("পরিসংখ্যান", "সহসম্পর্ক", [a, b]) => {
+                let (a, b) = (to_vecf(a)?, to_vecf(b)?);
+                if a.len() != b.len() || a.len() < 2 {
+                    return Err(err(pos, "সহসম্পর্ক: দুই ভেক্টরের দৈর্ঘ্য সমান ও কমপক্ষে ২ হতে হবে"));
+                }
+                let (sa, sb) = (stat_variance(&a).sqrt(), stat_variance(&b).sqrt());
+                if sa == 0.0 || sb == 0.0 {
+                    return Err(err(pos, "সহসম্পর্ক: একটি ভেক্টরের আদর্শ-বিচ্যুতি শূন্য (সব মান সমান)"));
+                }
+                Ok(Value::Dec(stat_covariance(&a, &b) / (sa * sb)))
+            }
+            ("পরিসংখ্যান", "রৈখিক_রিগ্রেশন", [x, y]) => {
+                let (x, y) = (to_vecf(x)?, to_vecf(y)?);
+                if x.len() != y.len() || x.len() < 2 {
+                    return Err(err(pos, "রৈখিক_রিগ্রেশন: দুই ভেক্টরের দৈর্ঘ্য সমান ও কমপক্ষে ২ হতে হবে"));
+                }
+                let (mx, my) = (stat_mean(&x), stat_mean(&y));
+                let cov: f64 = x.iter().zip(&y).map(|(xi, yi)| (xi - mx) * (yi - my)).sum();
+                let varx: f64 = x.iter().map(|xi| (xi - mx).powi(2)).sum();
+                if varx == 0.0 {
+                    return Err(err(pos, "রৈখিক_রিগ্রেশন: x-এর সব মান সমান, ঢাল অসংজ্ঞায়িত"));
+                }
+                let slope = cov / varx;
+                let intercept = my - slope * mx;
+                Ok(vecf_val(vec![slope, intercept]))
+            }
+
             // গ্রাফিক্স — ইন্টারপ্রেটেড মোডে আঁকা no-op
             ("গ্রাফিক্স", _, _) => Ok(Value::Null),
 
@@ -1896,6 +1973,47 @@ fn regular_polygon(cx: f64, cy: f64, rx: f64, ry: f64, n: i64) -> Vec<Vec<f64>> 
             vec![cx + rx * angle.cos(), cy + ry * angle.sin()]
         })
         .collect()
+}
+
+// পরিসংখ্যান — সব দশমিক[] উপর কাজ করে। ভেদাংক/আদর্শ_বিচ্যুতি/সহভেদাংক
+// population সংস্করণ (n দিয়ে ভাগ, n-1 নয়) — পুরো ডেটাসেট হাতে আছে ধরে,
+// একটা sample-থেকে-অনুমান নয়।
+fn stat_mean(v: &[f64]) -> f64 {
+    v.iter().sum::<f64>() / v.len() as f64
+}
+
+fn stat_median(v: &[f64]) -> f64 {
+    let mut s = v.to_vec();
+    s.sort_by(|a, b| a.partial_cmp(b).unwrap());
+    let n = s.len();
+    if n % 2 == 1 {
+        s[n / 2]
+    } else {
+        (s[n / 2 - 1] + s[n / 2]) / 2.0
+    }
+}
+
+fn stat_mode(v: &[f64]) -> f64 {
+    let mut best = v[0];
+    let mut best_count = 0usize;
+    for &x in v {
+        let count = v.iter().filter(|&&y| y == x).count();
+        if count > best_count {
+            best_count = count;
+            best = x;
+        }
+    }
+    best
+}
+
+fn stat_variance(v: &[f64]) -> f64 {
+    let m = stat_mean(v);
+    v.iter().map(|x| (x - m).powi(2)).sum::<f64>() / v.len() as f64
+}
+
+fn stat_covariance(a: &[f64], b: &[f64]) -> f64 {
+    let (ma, mb) = (stat_mean(a), stat_mean(b));
+    a.iter().zip(b).map(|(x, y)| (x - ma) * (y - mb)).sum::<f64>() / a.len() as f64
 }
 
 fn values_eq(l: &Value, r: &Value) -> bool {

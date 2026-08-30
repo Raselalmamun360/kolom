@@ -113,6 +113,15 @@ const FALLIBLE_RT: &[&str] = &[
     "kl_geo_regular_polygon",
     "kl_geo_ellipse_points",
     "kl_geo_line_intersect",
+    "kl_stat_sum",
+    "kl_stat_mean",
+    "kl_stat_median",
+    "kl_stat_mode",
+    "kl_stat_variance",
+    "kl_stat_stddev",
+    "kl_stat_covariance",
+    "kl_stat_correlation",
+    "kl_stat_linreg",
 ];
 
 #[derive(Clone)]
@@ -1871,6 +1880,47 @@ impl Gen {
                 Ok(CVal::Arr(self.call_rt(b, "kl_geo_line_intersect", &[x1, y1, x2, y2, x3, y3, x4, y4]), Box::new(Ty::Dec)))
             }
 
+            // পরিসংখ্যান
+            ("পরিসংখ্যান", "সমষ্টি") => {
+                let v = self.lower_expr_arr(b, &args[0], env)?;
+                Ok(CVal::Dec(self.call_rt(b, "kl_stat_sum", &[v])))
+            }
+            ("পরিসংখ্যান", "গড়") => {
+                let v = self.lower_expr_arr(b, &args[0], env)?;
+                Ok(CVal::Dec(self.call_rt(b, "kl_stat_mean", &[v])))
+            }
+            ("পরিসংখ্যান", "মধ্যক") => {
+                let v = self.lower_expr_arr(b, &args[0], env)?;
+                Ok(CVal::Dec(self.call_rt(b, "kl_stat_median", &[v])))
+            }
+            ("পরিসংখ্যান", "প্রচুরক") => {
+                let v = self.lower_expr_arr(b, &args[0], env)?;
+                Ok(CVal::Dec(self.call_rt(b, "kl_stat_mode", &[v])))
+            }
+            ("পরিসংখ্যান", "ভেদাংক") => {
+                let v = self.lower_expr_arr(b, &args[0], env)?;
+                Ok(CVal::Dec(self.call_rt(b, "kl_stat_variance", &[v])))
+            }
+            ("পরিসংখ্যান", "আদর্শ_বিচ্যুতি") => {
+                let v = self.lower_expr_arr(b, &args[0], env)?;
+                Ok(CVal::Dec(self.call_rt(b, "kl_stat_stddev", &[v])))
+            }
+            ("পরিসংখ্যান", "সহভেদাংক") => {
+                let a = self.lower_expr_arr(b, &args[0], env)?;
+                let c = self.lower_expr_arr(b, &args[1], env)?;
+                Ok(CVal::Dec(self.call_rt(b, "kl_stat_covariance", &[a, c])))
+            }
+            ("পরিসংখ্যান", "সহসম্পর্ক") => {
+                let a = self.lower_expr_arr(b, &args[0], env)?;
+                let c = self.lower_expr_arr(b, &args[1], env)?;
+                Ok(CVal::Dec(self.call_rt(b, "kl_stat_correlation", &[a, c])))
+            }
+            ("পরিসংখ্যান", "রৈখিক_রিগ্রেশন") => {
+                let x = self.lower_expr_arr(b, &args[0], env)?;
+                let y = self.lower_expr_arr(b, &args[1], env)?;
+                Ok(CVal::Arr(self.call_rt(b, "kl_stat_linreg", &[x, y]), Box::new(Ty::Dec)))
+            }
+
             _ => Err(format!(
                 "M4 codegen: '{}.{}' এখনো সমর্থিত নয় (গ্রাফিক্স UI ইঞ্জিনের অংশ)",
                 module, item
@@ -2866,6 +2916,16 @@ pub fn emit_for(prog: &Program, target: crate::link::Target) -> Result<Vec<u8>, 
         ("kl_geo_regular_polygon", &[f64t, f64t, f64t, i64t], &[ptr_ty]),
         ("kl_geo_ellipse_points", &[f64t, f64t, f64t, f64t, i64t], &[ptr_ty]),
         ("kl_geo_line_intersect", &[f64t, f64t, f64t, f64t, f64t, f64t, f64t, f64t], &[ptr_ty]),
+        // পরিসংখ্যান
+        ("kl_stat_sum", &[ptr_ty], &[f64t]),
+        ("kl_stat_mean", &[ptr_ty], &[f64t]),
+        ("kl_stat_median", &[ptr_ty], &[f64t]),
+        ("kl_stat_mode", &[ptr_ty], &[f64t]),
+        ("kl_stat_variance", &[ptr_ty], &[f64t]),
+        ("kl_stat_stddev", &[ptr_ty], &[f64t]),
+        ("kl_stat_covariance", &[ptr_ty, ptr_ty], &[f64t]),
+        ("kl_stat_correlation", &[ptr_ty, ptr_ty], &[f64t]),
+        ("kl_stat_linreg", &[ptr_ty, ptr_ty], &[ptr_ty]),
     ];
     let mut rt = HashMap::new();
     for (name, params, rets) in stdlib_imports {

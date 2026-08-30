@@ -1896,3 +1896,151 @@ pub extern "C" fn kl_geo_line_intersect(x1: f64, y1: f64, x2: f64, y2: f64, x3: 
     let t = ((x1 - x3) * (y3 - y4) - (y1 - y3) * (x3 - x4)) / denom;
     arr_from_vecf(&[x1 + t * (x2 - x1), y1 + t * (y2 - y1)])
 }
+
+// ============================================================================
+// পরিসংখ্যান (statistics) — সব দশমিক[] উপর কাজ করে, ম্যাট্রিক্সের vecf_from_arr/
+// arr_from_vecf পুনর্ব্যবহার করে। ভেদাংক/আদর্শ_বিচ্যুতি/সহভেদাংক population
+// সংস্করণ (n দিয়ে ভাগ) — পুরো ডেটাসেট হাতে আছে ধরে, sample-থেকে-অনুমান নয়।
+// ============================================================================
+
+fn stat_mean(v: &[f64]) -> f64 {
+    v.iter().sum::<f64>() / v.len() as f64
+}
+
+fn stat_median(v: &[f64]) -> f64 {
+    let mut s = v.to_vec();
+    s.sort_by(|a, b| a.partial_cmp(b).unwrap());
+    let n = s.len();
+    if n % 2 == 1 {
+        s[n / 2]
+    } else {
+        (s[n / 2 - 1] + s[n / 2]) / 2.0
+    }
+}
+
+fn stat_mode(v: &[f64]) -> f64 {
+    let mut best = v[0];
+    let mut best_count = 0usize;
+    for &x in v {
+        let count = v.iter().filter(|&&y| y == x).count();
+        if count > best_count {
+            best_count = count;
+            best = x;
+        }
+    }
+    best
+}
+
+fn stat_variance(v: &[f64]) -> f64 {
+    let m = stat_mean(v);
+    v.iter().map(|x| (x - m).powi(2)).sum::<f64>() / v.len() as f64
+}
+
+fn stat_covariance(a: &[f64], b: &[f64]) -> f64 {
+    let (ma, mb) = (stat_mean(a), stat_mean(b));
+    a.iter().zip(b).map(|(x, y)| (x - ma) * (y - mb)).sum::<f64>() / a.len() as f64
+}
+
+#[no_mangle]
+pub extern "C" fn kl_stat_sum(v: *mut u8) -> f64 {
+    let v = unsafe { vecf_from_arr(v) };
+    if v.is_empty() {
+        fail("সমষ্টি: খালি ভেক্টরে সংজ্ঞায়িত নয়".into());
+        return 0.0;
+    }
+    v.iter().sum()
+}
+
+#[no_mangle]
+pub extern "C" fn kl_stat_mean(v: *mut u8) -> f64 {
+    let v = unsafe { vecf_from_arr(v) };
+    if v.is_empty() {
+        fail("গড়: খালি ভেক্টরে সংজ্ঞায়িত নয়".into());
+        return 0.0;
+    }
+    stat_mean(&v)
+}
+
+#[no_mangle]
+pub extern "C" fn kl_stat_median(v: *mut u8) -> f64 {
+    let v = unsafe { vecf_from_arr(v) };
+    if v.is_empty() {
+        fail("মধ্যক: খালি ভেক্টরে সংজ্ঞায়িত নয়".into());
+        return 0.0;
+    }
+    stat_median(&v)
+}
+
+#[no_mangle]
+pub extern "C" fn kl_stat_mode(v: *mut u8) -> f64 {
+    let v = unsafe { vecf_from_arr(v) };
+    if v.is_empty() {
+        fail("প্রচুরক: খালি ভেক্টরে সংজ্ঞায়িত নয়".into());
+        return 0.0;
+    }
+    stat_mode(&v)
+}
+
+#[no_mangle]
+pub extern "C" fn kl_stat_variance(v: *mut u8) -> f64 {
+    let v = unsafe { vecf_from_arr(v) };
+    if v.is_empty() {
+        fail("ভেদাংক: খালি ভেক্টরে সংজ্ঞায়িত নয়".into());
+        return 0.0;
+    }
+    stat_variance(&v)
+}
+
+#[no_mangle]
+pub extern "C" fn kl_stat_stddev(v: *mut u8) -> f64 {
+    let v = unsafe { vecf_from_arr(v) };
+    if v.is_empty() {
+        fail("আদর্শ_বিচ্যুতি: খালি ভেক্টরে সংজ্ঞায়িত নয়".into());
+        return 0.0;
+    }
+    stat_variance(&v).sqrt()
+}
+
+#[no_mangle]
+pub extern "C" fn kl_stat_covariance(a: *mut u8, b: *mut u8) -> f64 {
+    let (a, b) = unsafe { (vecf_from_arr(a), vecf_from_arr(b)) };
+    if a.len() != b.len() || a.len() < 2 {
+        fail("সহভেদাংক: দুই ভেক্টরের দৈর্ঘ্য সমান ও কমপক্ষে ২ হতে হবে".into());
+        return 0.0;
+    }
+    stat_covariance(&a, &b)
+}
+
+#[no_mangle]
+pub extern "C" fn kl_stat_correlation(a: *mut u8, b: *mut u8) -> f64 {
+    let (a, b) = unsafe { (vecf_from_arr(a), vecf_from_arr(b)) };
+    if a.len() != b.len() || a.len() < 2 {
+        fail("সহসম্পর্ক: দুই ভেক্টরের দৈর্ঘ্য সমান ও কমপক্ষে ২ হতে হবে".into());
+        return 0.0;
+    }
+    let (sa, sb) = (stat_variance(&a).sqrt(), stat_variance(&b).sqrt());
+    if sa == 0.0 || sb == 0.0 {
+        fail("সহসম্পর্ক: একটি ভেক্টরের আদর্শ-বিচ্যুতি শূন্য (সব মান সমান)".into());
+        return 0.0;
+    }
+    stat_covariance(&a, &b) / (sa * sb)
+}
+
+#[no_mangle]
+pub extern "C" fn kl_stat_linreg(x: *mut u8, y: *mut u8) -> *mut u8 {
+    let (x, y) = unsafe { (vecf_from_arr(x), vecf_from_arr(y)) };
+    if x.len() != y.len() || x.len() < 2 {
+        fail("রৈখিক_রিগ্রেশন: দুই ভেক্টরের দৈর্ঘ্য সমান ও কমপক্ষে ২ হতে হবে".into());
+        return arr_from_vecf(&[0.0, 0.0]);
+    }
+    let (mx, my) = (stat_mean(&x), stat_mean(&y));
+    let cov: f64 = x.iter().zip(&y).map(|(xi, yi)| (xi - mx) * (yi - my)).sum();
+    let varx: f64 = x.iter().map(|xi| (xi - mx).powi(2)).sum();
+    if varx == 0.0 {
+        fail("রৈখিক_রিগ্রেশন: x-এর সব মান সমান, ঢাল অসংজ্ঞায়িত".into());
+        return arr_from_vecf(&[0.0, 0.0]);
+    }
+    let slope = cov / varx;
+    let intercept = my - slope * mx;
+    arr_from_vecf(&[slope, intercept])
+}
