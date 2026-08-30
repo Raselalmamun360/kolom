@@ -52,6 +52,14 @@ mod imp {
     const C_FILLCIRCLE: i32 = 6;
     const C_TEXT: i32 = 7;
     const C_FONT: i32 = 8;
+    const C_ELLIPSE: i32 = 9;
+    const C_FILLELLIPSE: i32 = 10;
+    const C_PATH: i32 = 11;
+    const C_POLY: i32 = 12;
+    const C_FILLPOLY: i32 = 13;
+    const C_ARC: i32 = 14;
+    const C_SECTOR: i32 = 15;
+    const C_FILLSECTOR: i32 = 16;
 
     const LEAF_H: i32 = 52;
     const GAP: i32 = 16;
@@ -86,7 +94,14 @@ mod imp {
         b: i32,
         c: i32,
         d: i32,
+        /// A 5th int parameter — only `আর্ক`/`সেক্টর`/`ভরাট_সেক্টর` need it
+        /// (cx, cy, r, start°, end°: five values, one more than a/b/c/d hold).
+        e: i32,
         txt: Vec<u16>,
+        /// Point list for `পথ`/`বহুভুজ`/`ভরাট_বহুভুজ` — empty for every other
+        /// op. The same "one extra variable-length field on every command"
+        /// pattern `txt` already established for text, just for points.
+        pts: Vec<POINT>,
     }
 
     struct Ui {
@@ -152,6 +167,36 @@ mod imp {
         let bytes = std::slice::from_raw_parts(p.add(16), len);
         let s = String::from_utf8_lossy(bytes);
         wide(&s)
+    }
+
+    // kolom array layout: [rc: i64][len: i64][cap: i64][elem_size: i64]
+    // [drop_elem: i64][data...] — see kolom-runtime's own ARR_HEADER. `পথ`/
+    // `বহুভুজ`/`ভরাট_বহুভুজ` take a `দশমিক[][]` (an array of `[x, y]`
+    // points, `জ্যামিতি`'s shape-generator convention), decoded here by hand
+    // rather than calling back into the crate root, matching how
+    // `kolom_str_to_wide` above already reads `kl_str` directly.
+    const ARR_HEADER: usize = 40;
+
+    unsafe fn decode_points(p: *mut u8) -> Vec<POINT> {
+        if p.is_null() {
+            return Vec::new();
+        }
+        let outer_len = *(p.add(8) as *const i64);
+        let mut pts = Vec::with_capacity(outer_len.max(0) as usize);
+        for i in 0..outer_len {
+            let inner_ptr = *(p.add(ARR_HEADER + (i as usize) * 8) as *const *mut u8);
+            if inner_ptr.is_null() {
+                continue;
+            }
+            let inner_len = *(inner_ptr.add(8) as *const i64);
+            if inner_len < 2 {
+                continue;
+            }
+            let x = *(inner_ptr.add(ARR_HEADER) as *const f64);
+            let y = *(inner_ptr.add(ARR_HEADER + 8) as *const f64);
+            pts.push(POINT { x: x as i32, y: y as i32 });
+        }
+        pts
     }
 
     // ---- USP10 complex-script shaping (dynamically loaded, as in C) ----
@@ -275,6 +320,13 @@ mod imp {
         u.pool.clear();
         u.stack.clear();
         u.root = None;
+        // `গ্রাফিক্স.*` calls inside `ডিসপ্লে` re-run on every rebuild (a tick
+        // or a state-changing handler), same as the widget tree above — but
+        // unlike `pool`, `gbuf` was never cleared here, so every redraw just
+        // appended to the last one. A moving/color-changing shape animated
+        // via `টিক` accumulated an ever-growing trail instead of updating in
+        // place, until the 4096-command cap silently froze the canvas.
+        u.gbuf.clear();
         let r = alloc(W_COL);
         u.root = Some(r);
         ui().stack.push(r);
@@ -451,9 +503,9 @@ mod imp {
         let mut oldorg = POINT { x: 0, y: 0 };
         SetViewportOrgEx(dc, box_.left, box_.top, &mut oldorg);
         for i in 0..u.gbuf.len() {
-            let (op, a, b, c, d) = {
+            let (op, a, b, c, d, e) = {
                 let cm = &u.gbuf[i];
-                (cm.op, cm.a, cm.b, cm.c, cm.d)
+                (cm.op, cm.a, cm.b, cm.c, cm.d, cm.e)
             };
             match op {
                 C_COLOR => {
@@ -504,6 +556,101 @@ mod imp {
                     SelectObject(dc, oldpen);
                     SelectObject(dc, oldbr);
                     DeleteObject(br as _);
+                }
+                C_ELLIPSE => {
+                    let pen = CreatePen(PS_SOLID, 1, u.gcolor);
+                    let oldpen = SelectObject(dc, pen as _);
+                    let oldbr = SelectObject(dc, GetStockObject(HOLLOW_BRUSH));
+                    Ellipse(dc, a - c, b - d, a + c, b + d);
+                    SelectObject(dc, oldbr);
+                    SelectObject(dc, oldpen);
+                    DeleteObject(pen as _);
+                }
+                C_FILLELLIPSE => {
+                    let br = CreateSolidBrush(u.gcolor);
+                    let oldbr = SelectObject(dc, br as _);
+                    let oldpen = SelectObject(dc, GetStockObject(NULL_PEN));
+                    Ellipse(dc, a - c, b - d, a + c, b + d);
+                    SelectObject(dc, oldpen);
+                    SelectObject(dc, oldbr);
+                    DeleteObject(br as _);
+                }
+                C_PATH => {
+                    let pts = u.gbuf[i].pts.clone();
+                    if pts.len() >= 2 {
+                        let pen = CreatePen(PS_SOLID, 1, u.gcolor);
+                        let old = SelectObject(dc, pen as _);
+                        Polyline(dc, pts.as_ptr(), pts.len() as i32);
+                        SelectObject(dc, old);
+                        DeleteObject(pen as _);
+                    }
+                }
+                C_POLY => {
+                    let pts = u.gbuf[i].pts.clone();
+                    if pts.len() >= 2 {
+                        let pen = CreatePen(PS_SOLID, 1, u.gcolor);
+                        let oldpen = SelectObject(dc, pen as _);
+                        let oldbr = SelectObject(dc, GetStockObject(HOLLOW_BRUSH));
+                        Polygon(dc, pts.as_ptr(), pts.len() as i32);
+                        SelectObject(dc, oldbr);
+                        SelectObject(dc, oldpen);
+                        DeleteObject(pen as _);
+                    }
+                }
+                C_FILLPOLY => {
+                    let pts = u.gbuf[i].pts.clone();
+                    if pts.len() >= 2 {
+                        let br = CreateSolidBrush(u.gcolor);
+                        let oldbr = SelectObject(dc, br as _);
+                        let oldpen = SelectObject(dc, GetStockObject(NULL_PEN));
+                        Polygon(dc, pts.as_ptr(), pts.len() as i32);
+                        SelectObject(dc, oldpen);
+                        SelectObject(dc, oldbr);
+                        DeleteObject(br as _);
+                    }
+                }
+                C_ARC | C_SECTOR | C_FILLSECTOR => {
+                    // (a, b, c) = cx, cy, r; (d, e) = start°, end° — GDI's
+                    // Arc/Pie sweep between two *points* on the ellipse, not
+                    // angles directly, so the boundary points are computed
+                    // here. Same angle convention as `জ্যামিতি.ঘোরানো`/
+                    // `নিয়মিত_বহুভুজ`: 0° at +x, growing toward +y (which
+                    // reads clockwise on screen, since screen y grows down).
+                    let (cxf, cyf, rf) = (a as f64, b as f64, c as f64);
+                    let r1 = (d as f64).to_radians();
+                    let r2 = (e as f64).to_radians();
+                    let x1 = (cxf + rf * r1.cos()) as i32;
+                    let y1 = (cyf + rf * r1.sin()) as i32;
+                    let x2 = (cxf + rf * r2.cos()) as i32;
+                    let y2 = (cyf + rf * r2.sin()) as i32;
+                    let (left, top, right, bottom) = (a - c, b - c, a + c, b + c);
+                    match op {
+                        C_ARC => {
+                            let pen = CreatePen(PS_SOLID, 1, u.gcolor);
+                            let old = SelectObject(dc, pen as _);
+                            Arc(dc, left, top, right, bottom, x1, y1, x2, y2);
+                            SelectObject(dc, old);
+                            DeleteObject(pen as _);
+                        }
+                        C_SECTOR => {
+                            let pen = CreatePen(PS_SOLID, 1, u.gcolor);
+                            let oldpen = SelectObject(dc, pen as _);
+                            let oldbr = SelectObject(dc, GetStockObject(HOLLOW_BRUSH));
+                            Pie(dc, left, top, right, bottom, x1, y1, x2, y2);
+                            SelectObject(dc, oldbr);
+                            SelectObject(dc, oldpen);
+                            DeleteObject(pen as _);
+                        }
+                        _ => {
+                            let br = CreateSolidBrush(u.gcolor);
+                            let oldbr = SelectObject(dc, br as _);
+                            let oldpen = SelectObject(dc, GetStockObject(NULL_PEN));
+                            Pie(dc, left, top, right, bottom, x1, y1, x2, y2);
+                            SelectObject(dc, oldpen);
+                            SelectObject(dc, oldbr);
+                            DeleteObject(br as _);
+                        }
+                    }
                 }
                 C_TEXT => {
                     let txt = u.gbuf[i].txt.clone();
@@ -685,11 +832,25 @@ mod imp {
     // ---- graphics command buffer (গ্রাফিক্স module) ----
 
     fn gpush(op: i32, a: i32, b: i32, c: i32, d: i32, txt: Vec<u16>) {
+        gpush_full(op, a, b, c, d, 0, txt, Vec::new());
+    }
+
+    /// আর্ক/সেক্টর family — need a 5th int parameter.
+    fn gpush_e(op: i32, a: i32, b: i32, c: i32, d: i32, e: i32) {
+        gpush_full(op, a, b, c, d, e, Vec::new(), Vec::new());
+    }
+
+    /// পথ/বহুভুজ/ভরাট_বহুভুজ family — need a point list instead of a/b/c/d.
+    fn gpush_pts(op: i32, pts: Vec<POINT>) {
+        gpush_full(op, 0, 0, 0, 0, 0, Vec::new(), pts);
+    }
+
+    fn gpush_full(op: i32, a: i32, b: i32, c: i32, d: i32, e: i32, txt: Vec<u16>, pts: Vec<POINT>) {
         let u = ui();
         if u.gbuf.len() >= 4096 {
             return;
         }
-        u.gbuf.push(GCmd { op, a, b, c, d, txt });
+        u.gbuf.push(GCmd { op, a, b, c, d, e, txt, pts });
     }
 
     #[no_mangle]
@@ -720,6 +881,38 @@ mod imp {
     #[no_mangle]
     pub extern "C" fn kl_g_fillcircle(cx: i64, cy: i64, r: i64) {
         gpush(C_FILLCIRCLE, cx as i32, cy as i32, r as i32, 0, Vec::new());
+    }
+    #[no_mangle]
+    pub extern "C" fn kl_g_ellipse(cx: i64, cy: i64, rx: i64, ry: i64) {
+        gpush(C_ELLIPSE, cx as i32, cy as i32, rx as i32, ry as i32, Vec::new());
+    }
+    #[no_mangle]
+    pub extern "C" fn kl_g_fillellipse(cx: i64, cy: i64, rx: i64, ry: i64) {
+        gpush(C_FILLELLIPSE, cx as i32, cy as i32, rx as i32, ry as i32, Vec::new());
+    }
+    #[no_mangle]
+    pub extern "C" fn kl_g_path(points: *mut u8) {
+        gpush_pts(C_PATH, unsafe { decode_points(points) });
+    }
+    #[no_mangle]
+    pub extern "C" fn kl_g_polygon(points: *mut u8) {
+        gpush_pts(C_POLY, unsafe { decode_points(points) });
+    }
+    #[no_mangle]
+    pub extern "C" fn kl_g_fillpolygon(points: *mut u8) {
+        gpush_pts(C_FILLPOLY, unsafe { decode_points(points) });
+    }
+    #[no_mangle]
+    pub extern "C" fn kl_g_arc(cx: i64, cy: i64, r: i64, start: i64, end: i64) {
+        gpush_e(C_ARC, cx as i32, cy as i32, r as i32, start as i32, end as i32);
+    }
+    #[no_mangle]
+    pub extern "C" fn kl_g_sector(cx: i64, cy: i64, r: i64, start: i64, end: i64) {
+        gpush_e(C_SECTOR, cx as i32, cy as i32, r as i32, start as i32, end as i32);
+    }
+    #[no_mangle]
+    pub extern "C" fn kl_g_fillsector(cx: i64, cy: i64, r: i64, start: i64, end: i64) {
+        gpush_e(C_FILLSECTOR, cx as i32, cy as i32, r as i32, start as i32, end as i32);
     }
     #[no_mangle]
     pub extern "C" fn kl_g_text(x: i64, y: i64, s: *mut u8) {
@@ -997,6 +1190,14 @@ mod imp {
     stub!(kl_g_fillrect(a: i64, b: i64, c: i64, d: i64));
     stub!(kl_g_circle(a: i64, b: i64, c: i64));
     stub!(kl_g_fillcircle(a: i64, b: i64, c: i64));
+    stub!(kl_g_ellipse(a: i64, b: i64, c: i64, d: i64));
+    stub!(kl_g_fillellipse(a: i64, b: i64, c: i64, d: i64));
+    stub!(kl_g_path(points: *mut u8));
+    stub!(kl_g_polygon(points: *mut u8));
+    stub!(kl_g_fillpolygon(points: *mut u8));
+    stub!(kl_g_arc(a: i64, b: i64, c: i64, d: i64, e: i64));
+    stub!(kl_g_sector(a: i64, b: i64, c: i64, d: i64, e: i64));
+    stub!(kl_g_fillsector(a: i64, b: i64, c: i64, d: i64, e: i64));
     stub!(kl_g_text(x: i64, y: i64, s: *mut u8));
     stub!(kl_g_font(s: *mut u8, size: i64));
 }

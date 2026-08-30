@@ -1616,6 +1616,39 @@ impl Gen {
                 self.call_rt_void(b, "kl_g_font", &[name, size]);
                 Ok(CVal::Void)
             }
+            ("গ্রাফিক্স", "উপবৃত্ত") | ("গ্রাফিক্স", "ভরাট_উপবৃত্ত") => {
+                let cx = self.lower_expr_num(b, &args[0], env)?;
+                let cy = self.lower_expr_num(b, &args[1], env)?;
+                let rx = self.lower_expr_num(b, &args[2], env)?;
+                let ry = self.lower_expr_num(b, &args[3], env)?;
+                let rt = if item == "উপবৃত্ত" { "kl_g_ellipse" } else { "kl_g_fillellipse" };
+                self.call_rt_void(b, rt, &[cx, cy, rx, ry]);
+                Ok(CVal::Void)
+            }
+            ("গ্রাফিক্স", "আর্ক") | ("গ্রাফিক্স", "সেক্টর") | ("গ্রাফিক্স", "ভরাট_সেক্টর") => {
+                let cx = self.lower_expr_num(b, &args[0], env)?;
+                let cy = self.lower_expr_num(b, &args[1], env)?;
+                let r = self.lower_expr_num(b, &args[2], env)?;
+                let start = self.lower_expr_num(b, &args[3], env)?;
+                let end = self.lower_expr_num(b, &args[4], env)?;
+                let rt = match item {
+                    "আর্ক" => "kl_g_arc",
+                    "সেক্টর" => "kl_g_sector",
+                    _ => "kl_g_fillsector",
+                };
+                self.call_rt_void(b, rt, &[cx, cy, r, start, end]);
+                Ok(CVal::Void)
+            }
+            ("গ্রাফিক্স", "পথ") | ("গ্রাফিক্স", "বহুভুজ") | ("গ্রাফিক্স", "ভরাট_বহুভুজ") => {
+                let pts = self.lower_expr_arr(b, &args[0], env)?;
+                let rt = match item {
+                    "পথ" => "kl_g_path",
+                    "বহুভুজ" => "kl_g_polygon",
+                    _ => "kl_g_fillpolygon",
+                };
+                self.call_rt_void(b, rt, &[pts]);
+                Ok(CVal::Void)
+            }
             ("গ্রাফিক্স", "টিক") => {
                 let ms = self.lower_expr_num(b, &args[0], env)?;
                 let ExprKind::Ident(id) = &args[1].kind else {
@@ -2790,6 +2823,14 @@ pub fn emit_for(prog: &Program, target: crate::link::Target) -> Result<Vec<u8>, 
         ("kl_g_fillcircle", &[i64t, i64t, i64t], &[]),
         ("kl_g_text", &[i64t, i64t, ptr_ty], &[]),
         ("kl_g_font", &[ptr_ty, i64t], &[]),
+        ("kl_g_ellipse", &[i64t, i64t, i64t, i64t], &[]),
+        ("kl_g_fillellipse", &[i64t, i64t, i64t, i64t], &[]),
+        ("kl_g_path", &[ptr_ty], &[]),
+        ("kl_g_polygon", &[ptr_ty], &[]),
+        ("kl_g_fillpolygon", &[ptr_ty], &[]),
+        ("kl_g_arc", &[i64t, i64t, i64t, i64t, i64t], &[]),
+        ("kl_g_sector", &[i64t, i64t, i64t, i64t, i64t], &[]),
+        ("kl_g_fillsector", &[i64t, i64t, i64t, i64t, i64t], &[]),
         // ম্যাট্রিক্স
         ("kl_mat_vec_add", &[ptr_ty, ptr_ty], &[ptr_ty]),
         ("kl_mat_vec_sub", &[ptr_ty, ptr_ty], &[ptr_ty]),
