@@ -109,7 +109,19 @@ struct FuncInfo {
 #[derive(Clone)]
 struct StructLayout {
     fields: Vec<(String, Ty)>,
+    /// Decrefs this struct's owning *fields* — called by `kl_struct_decref`
+    /// only once the struct's own refcount has hit zero. Not itself a
+    /// complete decref; see `full_decref_id`.
     drop_id: FuncId,
+    /// A complete `fn(*mut u8)` decref of one struct instance: decrement
+    /// its own refcount, and free (via `drop_id`, then dealloc) if that hit
+    /// zero. `Txt`/`Arr`/`Shared` each get this for free from a single
+    /// generic runtime `*_decref` function; a struct's per-type field
+    /// layout means every struct type needs its own, which is why this
+    /// exists as a second generated function alongside `drop_id` rather
+    /// than folding into it. Used as the `drop_elem`/`drop_payload`
+    /// callback wherever a struct is held by an array or `শেয়ার` cell.
+    full_decref_id: FuncId,
 }
 
 struct LoopCtx {
@@ -187,6 +199,10 @@ fn mangle(name: &str) -> String {
 
 fn mangle_drop(name: &str) -> String {
     format!("kd_{}", hex(name))
+}
+
+fn mangle_full_decref(name: &str) -> String {
+    format!("kfd_{}", hex(name))
 }
 
 pub struct Gen {
@@ -390,7 +406,11 @@ impl Gen {
                 let f = self.module.declare_func_in_func(self.shared_decref, b.func);
                 b.ins().func_addr(self.ptr_ty, f)
             }
-            Ty::Struct(_) => return Err("M2 codegen: struct-উপাদানসহ array/শেয়ার এখনো সমর্থিত নয়".into()),
+            Ty::Struct(name) => {
+                let layout = self.structs.get(name).cloned().ok_or_else(|| format!("অজানা struct '{}'", name))?;
+                let f = self.module.declare_func_in_func(layout.full_decref_id, b.func);
+                b.ins().func_addr(self.ptr_ty, f)
+            }
             _ => return Err("M2 codegen: এই উপাদান টাইপ এখনো সমর্থিত নয়".into()),
         })
     }
@@ -848,10 +868,188 @@ impl Gen {
                 let f = self.module.declare_func_in_func(self.print_text, b.func);
                 b.ins().call(f, &[txt]);
             }
-            CVal::Arr(..) | CVal::Struct(..) | CVal::Map(..) => return Err("M3 codegen: array/struct/map সরাসরি প্রিন্ট এখনো সমর্থিত নয়".into()),
+            v @ (CVal::Arr(..) | CVal::Struct(..) | CVal::Map(..)) => {
+                let txt = self.lower_to_display_text(b, v)?;
+                let f = self.module.declare_func_in_func(self.print_text, b.func);
+                b.ins().call(f, &[txt]);
+            }
             CVal::Void => return Err("M3 codegen: ফাঁকা মান প্রিন্ট করা যায় না".into()),
         }
         Ok(CVal::Void)
+    }
+
+    /// Renders `v` as a `kl_str`, the way `লেখো` displays it — matching the
+    /// interpreter's `Display for Value`: `[e, e, ...]` for arrays,
+    /// `{"key": v, ...}` for structs and maps (a struct's fields are
+    /// rendered exactly like a map's entries, because the interpreter's own
+    /// struct values *are* maps — there is no separate struct representation
+    /// there), and no added quoting for `লেখা` at any nesting depth.
+    ///
+    /// Struct fields are enumerated at compile time (a fixed, known list),
+    /// so that case unrolls directly. Arrays and maps have a runtime-only
+    /// length, so those two build their text through an actual Cranelift
+    /// loop — see `lower_arr_display_text`/`lower_map_display_text`.
+    ///
+    /// Each intermediate `kl_str_concat` result is left un-decref'd once
+    /// consumed into the next concatenation — a deliberate leak, not an
+    /// oversight, matching this backend's existing rule for scope-exit
+    /// decref (see `lower_try_catch`'s doc comment): correctness first,
+    /// full temporary-string hygiene is future work.
+    fn lower_to_display_text(&mut self, b: &mut FunctionBuilder, v: CVal) -> Result<Value, String> {
+        Ok(match v {
+            CVal::Num(x) => {
+                let f = self.module.declare_func_in_func(self.num_to_text, b.func);
+                let call = b.ins().call(f, &[x]);
+                b.inst_results(call)[0]
+            }
+            CVal::Dec(x) => self.call_rt(b, "kl_dec_to_text", &[x]),
+            CVal::Bool(x) => self.call_rt(b, "kl_bool_to_text", &[x]),
+            CVal::Txt(p) => p,
+            CVal::Shared(ptr, inner_ty) => {
+                let pf = self.module.declare_func_in_func(self.shared_payload_ptr, b.func);
+                let call = b.ins().call(pf, &[ptr]);
+                let payload_addr = b.inst_results(call)[0];
+                let inner = self.load_cval(b, &inner_ty, payload_addr, 0);
+                self.lower_to_display_text(b, inner)?
+            }
+            CVal::Struct(ptr, name) => self.lower_struct_display_text(b, ptr, &name)?,
+            CVal::Arr(ptr, elem_ty) => self.lower_arr_display_text(b, ptr, &elem_ty)?,
+            CVal::Map(ptr, key_ty, val_ty) => self.lower_map_display_text(b, ptr, &key_ty, &val_ty)?,
+            CVal::Void => return Err("M3 codegen: ফাঁকা মান প্রিন্ট করা যায় না".into()),
+        })
+    }
+
+    fn lit_str(&mut self, b: &mut FunctionBuilder, s: &str) -> Result<Value, String> {
+        Ok(cval_value(&self.make_str(b, s.as_bytes())?))
+    }
+
+    fn lower_struct_display_text(&mut self, b: &mut FunctionBuilder, ptr: Value, name: &str) -> Result<Value, String> {
+        let layout = self.structs.get(name).cloned().ok_or_else(|| format!("অজানা struct '{}'", name))?;
+        let mut acc = self.lit_str(b, "{")?;
+        for (i, (fname, fty)) in layout.fields.iter().enumerate() {
+            if i > 0 {
+                let sep = self.lit_str(b, ", ")?;
+                acc = self.call_rt(b, "kl_str_concat", &[acc, sep]);
+            }
+            let key = self.lit_str(b, &format!("\"{}\": ", fname))?;
+            acc = self.call_rt(b, "kl_str_concat", &[acc, key]);
+            let offset = (8 + i * 8) as i32;
+            let fval = self.load_cval(b, fty, ptr, offset);
+            let disp = self.lower_to_display_text(b, fval)?;
+            acc = self.call_rt(b, "kl_str_concat", &[acc, disp]);
+        }
+        let close = self.lit_str(b, "}")?;
+        Ok(self.call_rt(b, "kl_str_concat", &[acc, close]))
+    }
+
+    /// Shared skeleton for `[e, e, ...]`/`{k: v, ...}`: a Cranelift loop from
+    /// `0` to a runtime length, threading a `kl_str` accumulator through a
+    /// `Variable` (the same pattern `lower_foreach` uses for its index) and
+    /// appending a `", "` separator before every element but the first.
+    /// `build_one` lowers one index into that element's display text.
+    fn lower_joined_display_text(
+        &mut self,
+        b: &mut FunctionBuilder,
+        len: Value,
+        open: &str,
+        close: &str,
+        mut build_one: impl FnMut(&mut Self, &mut FunctionBuilder, Value) -> Result<Value, String>,
+    ) -> Result<Value, String> {
+        let acc_var = b.declare_var(self.ptr_ty);
+        let open_v = self.lit_str(b, open)?;
+        b.def_var(acc_var, open_v);
+
+        let idx_var = b.declare_var(types::I64);
+        let zero = b.ins().iconst(types::I64, 0);
+        b.def_var(idx_var, zero);
+
+        let header = b.create_block();
+        let body_blk = b.create_block();
+        let incr_blk = b.create_block();
+        let merge = b.create_block();
+        b.ins().jump(header, &[]);
+
+        b.switch_to_block(header);
+        let cur = b.use_var(idx_var);
+        let cond = b.ins().icmp(IntCC::SignedLessThan, cur, len);
+        b.ins().brif(cond, body_blk, &[], merge, &[]);
+
+        b.switch_to_block(body_blk);
+        b.seal_block(body_blk);
+        let idx_for_sep = b.use_var(idx_var);
+        let is_first = b.ins().icmp_imm(IntCC::Equal, idx_for_sep, 0);
+        let sep_blk = b.create_block();
+        let after_sep_blk = b.create_block();
+        b.ins().brif(is_first, after_sep_blk, &[], sep_blk, &[]);
+        b.switch_to_block(sep_blk);
+        b.seal_block(sep_blk);
+        let acc_before_sep = b.use_var(acc_var);
+        let sep_v = self.lit_str(b, ", ")?;
+        let with_sep = self.call_rt(b, "kl_str_concat", &[acc_before_sep, sep_v]);
+        b.def_var(acc_var, with_sep);
+        b.ins().jump(after_sep_blk, &[]);
+        b.switch_to_block(after_sep_blk);
+        b.seal_block(after_sep_blk);
+
+        let idx_for_elem = b.use_var(idx_var);
+        let elem_text = build_one(self, b, idx_for_elem)?;
+        let acc_before_elem = b.use_var(acc_var);
+        let appended = self.call_rt(b, "kl_str_concat", &[acc_before_elem, elem_text]);
+        b.def_var(acc_var, appended);
+        b.ins().jump(incr_blk, &[]);
+
+        b.switch_to_block(incr_blk);
+        b.seal_block(incr_blk);
+        let cur2 = b.use_var(idx_var);
+        let one = b.ins().iconst(types::I64, 1);
+        let next = b.ins().iadd(cur2, one);
+        b.def_var(idx_var, next);
+        b.ins().jump(header, &[]);
+        b.seal_block(header);
+
+        b.switch_to_block(merge);
+        b.seal_block(merge);
+        let final_acc = b.use_var(acc_var);
+        let close_v = self.lit_str(b, close)?;
+        Ok(self.call_rt(b, "kl_str_concat", &[final_acc, close_v]))
+    }
+
+    fn lower_arr_display_text(&mut self, b: &mut FunctionBuilder, arr_ptr: Value, elem_ty: &Ty) -> Result<Value, String> {
+        let lenf = self.module.declare_func_in_func(self.arr_len, b.func);
+        let lencall = b.ins().call(lenf, &[arr_ptr]);
+        let len_val = b.inst_results(lencall)[0];
+        let elem_ty = elem_ty.clone();
+        self.lower_joined_display_text(b, len_val, "[", "]", move |gen, b, idx| {
+            let getf = gen.module.declare_func_in_func(gen.arr_get_ptr, b.func);
+            let getcall = b.ins().call(getf, &[arr_ptr, idx]);
+            let elem_addr = b.inst_results(getcall)[0];
+            let elem_cval = gen.load_cval(b, &elem_ty, elem_addr, 0);
+            gen.lower_to_display_text(b, elem_cval)
+        })
+    }
+
+    fn lower_map_display_text(&mut self, b: &mut FunctionBuilder, map_ptr: Value, key_ty: &Ty, val_ty: &Ty) -> Result<Value, String> {
+        let len_val = self.call_rt(b, "kl_map_len", &[map_ptr]);
+        let key_ty = key_ty.clone();
+        let val_ty = val_ty.clone();
+        self.lower_joined_display_text(b, len_val, "{", "}", move |gen, b, idx| {
+            let key_bits = gen.call_rt(b, "kl_map_entry_key", &[map_ptr, idx]);
+            let key_cval = match &key_ty {
+                Ty::Num => CVal::Num(key_bits),
+                _ => CVal::Txt(key_bits),
+            };
+            let key_disp = gen.lower_to_display_text(b, key_cval)?;
+            let quote = gen.lit_str(b, "\"")?;
+            let qk1 = gen.call_rt(b, "kl_str_concat", &[quote, key_disp]);
+            let qk2 = gen.call_rt(b, "kl_str_concat", &[qk1, quote]);
+            let colon = gen.lit_str(b, ": ")?;
+            let with_colon = gen.call_rt(b, "kl_str_concat", &[qk2, colon]);
+
+            let val_addr = gen.call_rt(b, "kl_map_entry_val_ptr", &[map_ptr, idx]);
+            let val_cval = gen.load_cval(b, &val_ty, val_addr, 0);
+            let val_disp = gen.lower_to_display_text(b, val_cval)?;
+            Ok(gen.call_rt(b, "kl_str_concat", &[with_colon, val_disp]))
+        })
     }
 
     fn lower_print(&mut self, b: &mut FunctionBuilder, args: &[Expr], env: &mut Env) -> Result<CVal, String> {
@@ -2075,6 +2273,38 @@ impl Gen {
         self.module.clear_context(&mut ctx);
         Ok(())
     }
+
+    /// Generates `full_decref_id`: `kl_struct_decref(self, field_count,
+    /// &drop_id)`, wrapped as a standalone `fn(*mut u8)` so its address can
+    /// be handed to `kl_arr_new`/`kl_shared_new` as a drop callback — see
+    /// `StructLayout::full_decref_id`.
+    fn generate_struct_full_decref(&mut self, name: &str) -> Result<(), String> {
+        let layout = self.structs.get(name).cloned().expect("struct pre-declared");
+        let mut sig = self.module.make_signature();
+        sig.params.push(AbiParam::new(self.ptr_ty));
+        let mut ctx = self.module.make_context();
+        ctx.func.signature = sig;
+        let mut fbx = FunctionBuilderContext::new();
+        {
+            let mut b = FunctionBuilder::new(&mut ctx.func, &mut fbx);
+            let entry = b.create_block();
+            b.append_block_params_for_function_params(entry);
+            b.switch_to_block(entry);
+            b.seal_block(entry);
+            let self_ptr = b.block_params(entry)[0];
+            let drop_fref = self.module.declare_func_in_func(layout.drop_id, b.func);
+            let drop_addr = b.ins().func_addr(self.ptr_ty, drop_fref);
+            let fc_const = b.ins().iconst(types::I64, layout.fields.len() as i64);
+            let f = self.module.declare_func_in_func(self.struct_decref, b.func);
+            b.ins().call(f, &[self_ptr, fc_const, drop_addr]);
+            b.ins().return_(&[]);
+            let cfg = self.module.target_config();
+            b.finalize(cfg);
+        }
+        self.module.define_function(layout.full_decref_id, &mut ctx).map_err(|e| e.to_string())?;
+        self.module.clear_context(&mut ctx);
+        Ok(())
+    }
 }
 
 fn num_binop(b: &mut FunctionBuilder, op: BinOp, a: Value, c: Value) -> Result<CVal, String> {
@@ -2249,6 +2479,8 @@ pub fn emit_for(prog: &Program, target: crate::link::Target) -> Result<Vec<u8>, 
         // ম্যাপ
         ("kl_map_new", &[i64t], &[ptr_ty]),
         ("kl_map_len", &[ptr_ty], &[i64t]),
+        ("kl_map_entry_key", &[ptr_ty, i64t], &[i64t]),
+        ("kl_map_entry_val_ptr", &[ptr_ty, i64t], &[ptr_ty]),
         ("kl_map_find", &[ptr_ty, i64t], &[ptr_ty]),
         ("kl_map_set_slot", &[ptr_ty, i64t, ptr_ty], &[ptr_ty]),
         ("kl_map_delete", &[ptr_ty, i64t], &[]),
@@ -2338,10 +2570,15 @@ pub fn emit_for(prog: &Program, target: crate::link::Target) -> Result<Vec<u8>, 
             .module
             .declare_function(&mangle_drop(&sdecl.name.name), Linkage::Local, &dsig)
             .map_err(|e| e.to_string())?;
-        gen.structs.insert(sdecl.name.name.clone(), StructLayout { fields, drop_id });
+        let full_decref_id = gen
+            .module
+            .declare_function(&mangle_full_decref(&sdecl.name.name), Linkage::Local, &dsig)
+            .map_err(|e| e.to_string())?;
+        gen.structs.insert(sdecl.name.name.clone(), StructLayout { fields, drop_id, full_decref_id });
     }
     for sdecl in &prog.structs {
         gen.generate_struct_drop(&sdecl.name.name)?;
+        gen.generate_struct_full_decref(&sdecl.name.name)?;
     }
 
     for c in &prog.consts {

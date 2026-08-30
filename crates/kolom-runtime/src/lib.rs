@@ -1085,6 +1085,19 @@ pub extern "C" fn kl_map_len(p: *mut u8) -> i64 {
     map_len(p)
 }
 
+/// Entries are stored densely, in insertion order, up to `map_len(p)` — see
+/// `kl_map_find`'s own linear scan. These two accessors expose that ordering
+/// to codegen for printing a map's entries; nothing else needs direct index
+/// access, since `kl_map_find`/`kl_map_set_slot` look up by key instead.
+#[no_mangle]
+pub extern "C" fn kl_map_entry_key(p: *mut u8, i: i64) -> i64 {
+    unsafe { *(map_entry_ptr(p, i) as *const i64) }
+}
+#[no_mangle]
+pub extern "C" fn kl_map_entry_val_ptr(p: *mut u8, i: i64) -> *mut u8 {
+    unsafe { map_entry_ptr(p, i).add(8) }
+}
+
 /// Returns the value-slot address for `key` if present, or null.
 #[no_mangle]
 pub extern "C" fn kl_map_find(p: *mut u8, key: i64) -> *mut u8 {
