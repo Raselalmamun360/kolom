@@ -353,18 +353,8 @@ name = "kolom-cli"
 version = "0.1.0"
 dependencies = [
  "crossterm",
- "kolom-codegen",
  "kolom-codegen-cranelift",
  "kolom-interp",
- "kolom-lexer",
- "kolom-sema",
- "kolom-syntax",
-]
-
-[[package]]
-name = "kolom-codegen"
-version = "0.1.0"
-dependencies = [
  "kolom-lexer",
  "kolom-sema",
  "kolom-syntax",

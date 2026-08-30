@@ -10,8 +10,7 @@ fn write_line(bytes: &[u8]) {
     let _ = stdout.flush();
 }
 
-/// Bengali-numeral rendering. Used ONLY for diagnostic messages (matching
-/// kolom-codegen's `kl_bn`, which is likewise diagnostics-only). Program
+/// Bengali-numeral rendering. Used ONLY for diagnostic messages. Program
 /// output via `লেখো`/`লেখায়` uses ASCII digits — see `kl_print_num`.
 fn bn_digits(v: i64) -> String {
     const BENGALI: [char; 10] = ['০', '১', '২', '৩', '৪', '৫', '৬', '৭', '৮', '৯'];
@@ -26,7 +25,7 @@ fn bn_digits(v: i64) -> String {
         u /= 10;
     }
     if neg {
-        digits.push('\u{2212}'); // U+2212 MINUS SIGN, matching kolom-codegen's kl_bn
+        digits.push('\u{2212}'); // U+2212 MINUS SIGN
     }
     digits.iter().rev().collect()
 }
@@ -181,11 +180,10 @@ pub extern "C" fn kl_print_bool(v: i8) {
 // for all of them. Milestone-2 design note: unlike kolom-sema's static move
 // checking (which never distinguishes "move" from "copy" at the codegen
 // boundary — see plan doc), this runtime treats every binding-to-binding
-// copy uniformly as a refcount bump, exactly mirroring what kolom-codegen's
-// C backend already does (`tracked()`/scope-exit decref). It costs a few
-// more atomic-free increments than a precise move analysis would, but it's
-// correct and keeps codegen from needing sema's (currently unexported)
-// internal move/drop-point data.
+// copy uniformly as a refcount bump (incref on read, decref at scope exit).
+// It costs a few more atomic-free increments than a precise move analysis
+// would, but it's correct and keeps codegen from needing sema's (currently
+// unexported) internal move/drop-point data.
 // ============================================================================
 
 #[no_mangle]
@@ -305,10 +303,8 @@ pub extern "C" fn kl_num_to_text(v: i64) -> *mut u8 {
     kl_str_new(s.as_ptr(), s.len() as i64)
 }
 
-/// `লেখায়(দশমিক)` — ASCII digits (kolom-codegen's C backend formats
-/// decimals with `%g`/ASCII too, unlike integers' Bengali-digit `kl_bn`;
-/// matched here for the same reason: no established Bengali decimal
-/// notation to convert to).
+/// `লেখায়(দশমিক)` — ASCII digits, unlike integers' Bengali-digit `kl_bn`:
+/// no established Bengali decimal notation to convert to.
 #[no_mangle]
 pub extern "C" fn kl_dec_to_text(v: f64) -> *mut u8 {
     str_from_rust(&format!("{}", v))
@@ -1070,8 +1066,8 @@ pub extern "C" fn kl_json_escape(text: *mut u8) -> *mut u8 {
 }
 
 // ============================================================================
-// লেখা (string) — codepoint-indexed where the language elsewhere is
-// codepoint-indexed (matching kolom-codegen's `kl_cpcount` convention).
+// লেখা (string) — codepoint-indexed, consistent with how the language
+// counts everywhere else (`দৈর্ঘ্য`, slicing, etc.).
 // ============================================================================
 
 #[no_mangle]

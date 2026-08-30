@@ -14,7 +14,6 @@ const HELP: &str = "কলম — বাংলা প্রোগ্রামি
   kolom run <file.k>     একই কাজ (ইংরেজি)
   kolom বিল্ড <ফাইল.ক>    নেটিভ এক্সিকিউটেবল তৈরি করো
   kolom build <file.k>   একই কাজ (ইংরেজি)
-      --সি | --c-backend  পুরনো C ব্যাকএন্ড ব্যবহার করো (C কম্পাইলার লাগবে)
   kolom নতুন <নাম>       নতুন প্রকল্প তৈরি করো
   kolom new <name>       একই কাজ (ইংরেজি)
   kolom পাতা <ফাইল.ক>    বিল্ট-ইন এডিটর (লাইভ ত্রুটি + Ctrl+R চালাও)
@@ -30,9 +29,8 @@ fn main() -> ExitCode {
     match args.first().map(|s| s.as_str()) {
         Some("run") | Some("চালাও") => cmd_run(args.get(1)),
         Some("build") | Some("বিল্ড") => {
-            let use_c = args.iter().any(|a| a == "--সি" || a == "--c-backend");
             let rest: Vec<&String> = args[1..].iter().filter(|a| !a.starts_with("--")).collect();
-            cmd_build(rest.first().copied(), rest.get(1).copied(), use_c)
+            cmd_build(rest.first().copied(), rest.get(1).copied())
         }
         Some("new") | Some("নতুন") => cmd_new(args.get(1)),
         Some("edit") | Some("পাতা") => cmd_edit(args.get(1)),
@@ -170,55 +168,7 @@ fn check_program(path: Option<&String>) -> Result<(kolom_syntax::ast::Program, S
     Ok((prog, file, name))
 }
 
-// LEGACY FALLBACK: emits C source (kolom-codegen) and shells out to an
-// external gcc/clang/cc/cl found on PATH. The Cranelift backend
-// (crates/kolom-codegen-cranelift + kolom-runtime) is now the default for
-// `কলম বিল্ড` and needs no C compiler at all; this path remains reachable
-// via `--সি`/`--c-backend` because the Cranelift backend does not yet cover
-// the নেটওয়ার্ক module or non-Windows targets. Delete it once those land.
-fn find_c_compiler() -> Option<String> {
-    if let Ok(cc) = std::env::var("KLOM_CC") {
-        if !cc.trim().is_empty() {
-            return Some(cc);
-        }
-    }
-    let candidates = ["gcc", "clang", "cc", "cl"];
-    for c in candidates {
-        let probe = if cfg!(windows) {
-            std::process::Command::new("where").arg(c).output()
-        } else {
-            std::process::Command::new("which").arg(c).output()
-        };
-        if let Ok(out) = probe {
-            if out.status.success() {
-                let first = String::from_utf8_lossy(&out.stdout)
-                    .lines()
-                    .next()
-                    .unwrap_or("")
-                    .trim()
-                    .to_string();
-                if !first.is_empty() {
-                    return Some(first);
-                }
-            }
-        }
-    }
-    None
-}
-
-/// The target name that means "this machine". `কলম বিল্ড` defaults to
-/// `windows`, so this is also what tells a default build from a cross build.
-fn host_target() -> &'static str {
-    if cfg!(target_os = "windows") {
-        "windows"
-    } else if cfg!(target_os = "macos") {
-        "macos"
-    } else {
-        "linux"
-    }
-}
-
-fn cmd_build(path: Option<&String>, target: Option<&String>, use_c_backend: bool) -> ExitCode {
+fn cmd_build(path: Option<&String>, target: Option<&String>) -> ExitCode {
     let target = target.map(|s| s.as_str()).unwrap_or("windows");
     let (prog, file, _name) = match check_program(path) {
         Ok(x) => x,
@@ -241,112 +191,39 @@ fn cmd_build(path: Option<&String>, target: Option<&String>, use_c_backend: bool
         eprintln!("ত্রুটি: বিল্ড ফোল্ডার তৈরি করা যায়নি");
         return ExitCode::FAILURE;
     }
-    let mut exe_path = build_dir.join(format!("{}{}", exe_name, if cfg!(windows) { ".exe" } else { "" }));
 
-    // Default path: Cranelift emits machine code directly and a bundled
-    // linker produces the executable — no C compiler involved at any point.
-    if !use_c_backend {
-        let tgt = match kolom_codegen_cranelift::Target::from_name(target) {
-            Some(t) => t,
-            None => {
-                eprintln!(
-                    "ত্রুটি: '{}' টার্গেট Cranelift ব্যাকএন্ডে এখনো সমর্থিত নয় (windows, linux)",
-                    target
-                );
-                eprintln!("(C ব্যাকএন্ড দিয়ে চেষ্টা করতে: কলম বিল্ড --সি <ফাইল.ক> {})", target);
-                return ExitCode::FAILURE;
-            }
-        };
-        let obj_bytes = match kolom_codegen_cranelift::emit_for(&prog, tgt) {
-            Ok(b) => b,
-            Err(e) => {
-                eprintln!("ত্রুটি: {}", e);
-                eprintln!("(পুরনো C ব্যাকএন্ড দিয়ে চেষ্টা করতে: কলম বিল্ড --সি <ফাইল.ক>)");
-                return ExitCode::FAILURE;
-            }
-        };
-        let obj_path = build_dir.join("out.obj");
-        if std::fs::write(&obj_path, &obj_bytes).is_err() {
-            eprintln!("ত্রুটি: অবজেক্ট ফাইল লেখা যায়নি");
-            return ExitCode::FAILURE;
-        }
-        exe_path = build_dir.join(format!("{}{}", exe_name, tgt.exe_suffix()));
-        return match kolom_codegen_cranelift::link_executable_for(tgt, &obj_path, &exe_path) {
-            Ok(()) => {
-                println!("{}", exe_path.display());
-                ExitCode::SUCCESS
-            }
-            Err(e) => {
-                eprintln!("ত্রুটি: {}", e);
-                ExitCode::FAILURE
-            }
-        };
-    }
-
-    let c_source = kolom_codegen::emit(&prog, &exe_name, target);
-
-    let c_path = build_dir.join("out.c");
-    if std::fs::write(&c_path, c_source.as_bytes()).is_err() {
-        eprintln!("ত্রুটি: C সোর্স লেখা যায়নি");
-        return ExitCode::FAILURE;
-    }
-
-    // The C backend passes the target no further than choosing console vs
-    // Win32 output — it never selects a toolchain. So a cross target here
-    // would be compiled by whatever host `gcc`/`clang` is on PATH, and
-    // `কলম বিল্ড main.ক android` would hand back a working *host* binary with
-    // nothing to suggest it was not an Android one. Require the cross
-    // compiler to be named explicitly instead.
-    if target != host_target() && std::env::var("KLOM_CC").map(|v| v.trim().is_empty()).unwrap_or(true) {
-        eprintln!(
-            "ত্রুটি: '{}' টার্গেটের জন্য C ব্যাকএন্ডে ক্রস-কম্পাইলার লাগে — KLOM_CC দিয়ে সেটি দেখাও",
-            target
-        );
-        eprintln!("  যেমন (Android NDK):");
-        eprintln!("    KLOM_CC=<NDK>/toolchains/llvm/prebuilt/<host>/bin/aarch64-linux-android21-clang");
-        if target == "linux" {
-            eprintln!("  অথবা ডিফল্ট ব্যাকএন্ড ব্যবহার করো, যেটির কোনো C কম্পাইলার লাগে না:");
-            eprintln!("    কলম বিল্ড {} linux", file);
-        }
-        return ExitCode::FAILURE;
-    }
-
-    let cc = match find_c_compiler() {
-        Some(c) => c,
+    // Cranelift emits machine code directly and a bundled linker produces
+    // the executable — no C compiler involved at any point.
+    let tgt = match kolom_codegen_cranelift::Target::from_name(target) {
+        Some(t) => t,
         None => {
             eprintln!(
-                "ত্রুটি: কোনো C কম্পাইলার পাওয়া যায়নি — gcc/clang/cl ইনস্টল করো, অথবা KLOM_CC এনভায়রনমেন্ট ভ্যারিয়েবল দাও"
+                "ত্রুটি: '{}' টার্গেট সমর্থিত নয় (windows, linux, android)",
+                target
             );
-            eprintln!("C সোর্স তৈরি হয়েছে: {}", c_path.display());
             return ExitCode::FAILURE;
         }
     };
-
-    let mut cmd = std::process::Command::new(&cc);
-    cmd.arg("-O2").arg(&c_path).arg("-o").arg(&exe_path);
-    if cfg!(windows) && target != "linux" && target != "android" {
-        cmd.args(["-lgdi32", "-luser32", "-lws2_32"]);
-    } else if target == "windows" {
-        cmd.args(["-lgdi32", "-luser32", "-lws2_32"]);
+    let obj_bytes = match kolom_codegen_cranelift::emit_for(&prog, tgt) {
+        Ok(b) => b,
+        Err(e) => {
+            eprintln!("ত্রুটি: {}", e);
+            return ExitCode::FAILURE;
+        }
+    };
+    let obj_path = build_dir.join("out.obj");
+    if std::fs::write(&obj_path, &obj_bytes).is_err() {
+        eprintln!("ত্রুটি: অবজেক্ট ফাইল লেখা যায়নি");
+        return ExitCode::FAILURE;
     }
-    let status = cmd.status();
-
-    match status {
-        Ok(s) if s.success() => {
+    let exe_path = build_dir.join(format!("{}{}", exe_name, tgt.exe_suffix()));
+    match kolom_codegen_cranelift::link_executable_for(tgt, &obj_path, &exe_path) {
+        Ok(()) => {
             println!("{}", exe_path.display());
             ExitCode::SUCCESS
         }
-        Ok(s) => {
-            eprintln!(
-                "ত্রুটি: C কম্পাইলেশন ব্যর্থ ({}) — কোড {}",
-                cc,
-                s.code().unwrap_or(-1)
-            );
-            eprintln!("C সোর্স: {}", c_path.display());
-            ExitCode::FAILURE
-        }
         Err(e) => {
-            eprintln!("ত্রুটি: '{}' চালানো যায়নি ({})", cc, e);
+            eprintln!("ত্রুটি: {}", e);
             ExitCode::FAILURE
         }
     }

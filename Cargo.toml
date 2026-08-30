@@ -4,7 +4,6 @@ members = [
     "crates/kolom-lexer",
     "crates/kolom-syntax",
     "crates/kolom-sema",
-    "crates/kolom-codegen",
     "crates/kolom-runtime",
     "crates/kolom-codegen-cranelift",
     "crates/kolom-interp",

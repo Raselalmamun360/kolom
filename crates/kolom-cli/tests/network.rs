@@ -1,9 +1,8 @@
-//! The `নেটওয়ার্ক` module on the default (Cranelift) backend.
+//! The `নেটওয়ার্ক` module on the native (Cranelift) backend.
 //!
-//! This module was the last standard-library gap that still required the
-//! legacy `--সি` backend. The test stands up a real loopback echo server in
-//! a background thread, then drives it from a natively-compiled Kolom
-//! program — a genuine TCP round trip rather than a mock.
+//! The test stands up a real loopback echo server in a background thread,
+//! then drives it from a natively-compiled Kolom program — a genuine TCP
+//! round trip rather than a mock.
 //!
 //! Both the interpreter and the native binary are checked against the same
 //! expected output, so the two cannot drift apart.
@@ -128,7 +127,7 @@ fn network_module_native() {
         .expect("failed to run kolom");
     assert!(
         build.status.success(),
-        "কলম বিল্ড failed — the নেটওয়ার্ক module should no longer need --সি:\n{}",
+        "কলম বিল্ড failed:\n{}",
         String::from_utf8_lossy(&build.stderr)
     );
     let exe = String::from_utf8_lossy(&build.stdout).trim().to_string();

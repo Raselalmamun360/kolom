@@ -1,6 +1,6 @@
-//! Milestone-4: the native UI + 2D graphics engine, ported from
-//! kolom-codegen's `ui_runtime()`/`graphics_runtime()` C-text generators to
-//! real Rust over `windows-sys`.
+//! Milestone-4: the native UI + 2D graphics engine, ported from the
+//! since-removed legacy C backend's `ui_runtime()`/`graphics_runtime()`
+//! C-text generators to real Rust over `windows-sys`.
 //!
 //! Design notes vs. the C original:
 //! - The C version regenerated this whole engine as C source text on every
@@ -957,8 +957,8 @@ mod imp {
 }
 
 // ---------------------------------------------------------------------------
-// Non-Windows: console stubs, mirroring kolom-codegen's `ui_stubs()` — a UI
-// program still compiles and runs (headlessly) on other platforms.
+// Non-Windows: console stubs — a UI program still compiles and runs
+// (headlessly) on other platforms.
 // ---------------------------------------------------------------------------
 #[cfg(not(windows))]
 mod imp {
