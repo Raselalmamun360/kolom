@@ -18,6 +18,11 @@ kolom_io_test.txt
 *.obj
 *.pdb
 
+# --- VS Code extension build output ---------------------------------------
+# `editors/vscode/` is source (grammar, manifest); `vsce package` writes a
+# .vsix next to it, which is rebuildable and belongs on a release, not here.
+/editors/vscode/*.vsix
+
 # --- Editor / OS ----------------------------------------------------------
 .vscode/
 .idea/

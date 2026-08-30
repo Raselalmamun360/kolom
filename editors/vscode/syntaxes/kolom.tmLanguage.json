@@ -1,0 +1,155 @@
+{
+  "$schema": "https://raw.githubusercontent.com/martinring/tmlanguage/master/tmlanguage.json",
+  "name": "Kolom",
+  "scopeName": "source.kolom",
+  "fileTypes": ["ক"],
+  "patterns": [
+    { "include": "#comments" },
+    { "include": "#strings" },
+    { "include": "#characters" },
+    { "include": "#numbers" },
+    { "include": "#keywords" },
+    { "include": "#widgets" },
+    { "include": "#types" },
+    { "include": "#constants" },
+    { "include": "#function-declaration" },
+    { "include": "#struct-declaration" },
+    { "include": "#function-call" },
+    { "include": "#operators" },
+    { "include": "#punctuation" }
+  ],
+  "repository": {
+    "comments": {
+      "patterns": [
+        {
+          "name": "comment.line.double-slash.kolom",
+          "match": "//.*$"
+        },
+        {
+          "name": "comment.block.kolom",
+          "begin": "/\\*",
+          "end": "\\*/"
+        }
+      ]
+    },
+    "strings": {
+      "name": "string.quoted.double.kolom",
+      "begin": "\"",
+      "end": "\"",
+      "patterns": [{ "include": "#escapes" }]
+    },
+    "characters": {
+      "name": "string.quoted.single.kolom",
+      "begin": "'",
+      "end": "'",
+      "patterns": [{ "include": "#escapes" }]
+    },
+    "escapes": {
+      "patterns": [
+        {
+          "name": "constant.character.escape.unicode.kolom",
+          "match": "\\\\u\\{[0-9a-fA-F]+\\}"
+        },
+        {
+          "name": "constant.character.escape.kolom",
+          "match": "\\\\[ntr\\\\\"']"
+        },
+        {
+          "name": "invalid.illegal.unknown-escape.kolom",
+          "match": "\\\\."
+        }
+      ]
+    },
+    "numbers": {
+      "comment": "Bengali or ASCII digits. Left/right boundaries must reject Bengali combining vowel signs and virama (\\p{Mn}/\\p{Mc}) as well as letters/digits/underscore — otherwise a variable name that happens to end in a digit, like রহিম২, tokenizes as an unstyled identifier plus a stray numeric-literal token for the ২.",
+      "name": "constant.numeric.kolom",
+      "match": "(?<![\\p{L}\\p{Mn}\\p{Mc}\\p{Nd}_])[০-৯0-9]+(\\.[০-৯0-9]+)?(?![\\p{L}\\p{Mn}\\p{Mc}\\p{Nd}_])"
+    },
+    "keywords": {
+      "patterns": [
+        {
+          "comment": "declarations",
+          "name": "keyword.other.declaration.kolom",
+          "match": "(?<![\\p{L}\\p{Mn}\\p{Mc}\\p{Nd}_])(অ্যাপ|ফাংশন|ধরি|ধ্রুবক|ডাটা|ইম্পোর্ট)(?![\\p{L}\\p{Mn}\\p{Mc}\\p{Nd}_])"
+        },
+        {
+          "comment": "control flow",
+          "name": "keyword.control.kolom",
+          "match": "(?<![\\p{L}\\p{Mn}\\p{Mc}\\p{Nd}_])(যদি|নাহলে|লুপ|যতক্ষণ|প্রতি|ফেরাও|বিরতি|চলবে|চেষ্টা|ধরো)(?![\\p{L}\\p{Mn}\\p{Mc}\\p{Nd}_])"
+        },
+        {
+          "comment": "logical operators spelled as words rather than symbols",
+          "name": "keyword.operator.logical.kolom",
+          "match": "(?<![\\p{L}\\p{Mn}\\p{Mc}\\p{Nd}_])(এবং|অথবা|না)(?![\\p{L}\\p{Mn}\\p{Mc}\\p{Nd}_])"
+        },
+        {
+          "comment": "শেয়ার wraps another type, so it reads as a storage modifier rather than a type on its own",
+          "name": "storage.modifier.kolom",
+          "match": "(?<![\\p{L}\\p{Mn}\\p{Mc}\\p{Nd}_])(শেয়ার)(?![\\p{L}\\p{Mn}\\p{Mc}\\p{Nd}_])"
+        }
+      ]
+    },
+    "widgets": {
+      "comment": "native UI — used like component tags inside a ডিসপ্লে block",
+      "name": "support.class.widget.kolom",
+      "match": "(?<![\\p{L}\\p{Mn}\\p{Mc}\\p{Nd}_])(ডিসপ্লে|ক্যানভাস|টেক্সট|বাটন|ইনপুট|ছবি|সারি|কলাম|কার্ড|ডায়ালগ|স্ক্রল)(?![\\p{L}\\p{Mn}\\p{Mc}\\p{Nd}_])"
+    },
+    "types": {
+      "name": "storage.type.kolom",
+      "match": "(?<![\\p{L}\\p{Mn}\\p{Mc}\\p{Nd}_])(সংখ্যা|দশমিক|লেখা|সত্যতা|অক্ষর|ম্যাপ|ফাঁকা)(?![\\p{L}\\p{Mn}\\p{Mc}\\p{Nd}_])"
+    },
+    "constants": {
+      "patterns": [
+        {
+          "name": "constant.language.boolean.kolom",
+          "match": "(?<![\\p{L}\\p{Mn}\\p{Mc}\\p{Nd}_])(সত্য|মিথ্যা)(?![\\p{L}\\p{Mn}\\p{Mc}\\p{Nd}_])"
+        }
+      ]
+    },
+    "function-declaration": {
+      "comment": "the name right after ফাংশন — #keywords colors ফাংশন itself; the identifier class here must allow combining marks, or a name like গ্রেড_বের_করো only highlights its first consonant",
+      "match": "(?<=ফাংশন\\s)\\s*([\\p{L}_][\\p{L}\\p{Mn}\\p{Mc}\\p{Nd}_]*)",
+      "captures": {
+        "1": { "name": "entity.name.function.kolom" }
+      }
+    },
+    "struct-declaration": {
+      "comment": "the name right after ডাটা",
+      "match": "(?<=ডাটা\\s)\\s*([\\p{L}_][\\p{L}\\p{Mn}\\p{Mc}\\p{Nd}_]*)",
+      "captures": {
+        "1": { "name": "entity.name.type.kolom" }
+      }
+    },
+    "function-call": {
+      "comment": "identifier immediately followed by ( — covers both calls and struct constructors",
+      "match": "(?<![\\p{L}\\p{Mn}\\p{Mc}\\p{Nd}_])([\\p{L}_][\\p{L}\\p{Mn}\\p{Mc}\\p{Nd}_]*)(?=\\s*\\()",
+      "captures": {
+        "1": { "name": "entity.name.function.kolom" }
+      }
+    },
+    "operators": {
+      "name": "keyword.operator.kolom",
+      "match": "->|==|!=|<=|>=|\\+=|-=|\\*=|/=|[+\\-*/%<>=]"
+    },
+    "punctuation": {
+      "patterns": [
+        {
+          "name": "punctuation.definition.member.kolom",
+          "match": "\\."
+        },
+        {
+          "name": "punctuation.separator.kolom",
+          "match": ","
+        },
+        {
+          "name": "punctuation.definition.type-annotation.kolom",
+          "match": ":"
+        },
+        {
+          "name": "punctuation.brackets.kolom",
+          "match": "[{}()\\[\\]]"
+        }
+      ]
+    }
+  }
+}
