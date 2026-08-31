@@ -993,22 +993,30 @@ impl<'o> Interp<'o> {
                     .unwrap_or(0);
                 Ok(Value::Num(ms))
             }
-            ("সময়", "সেকেন্ড", []) => Ok(Value::Dec(
-                std::time::SystemTime::now()
-                    .duration_since(std::time::UNIX_EPOCH)
-                    .map(|d| d.as_secs_f64())
-                    .unwrap_or(0.0),
-            )),
+            // Monotonic seconds-since-process-start, per `Instant` — NOT
+            // wall-clock epoch seconds. See `process_start`'s doc comment
+            // for why: a `SystemTime`-based reading here could go backward
+            // across a clock adjustment, exactly the failure mode this
+            // function exists so benchmarking code doesn't have to guard
+            // against.
+            ("সময়", "সেকেন্ড", []) => Ok(Value::Dec(process_start().elapsed().as_secs_f64())),
             ("সময়", "বছর", []) => Ok(Value::Num(now_civil().0)),
             ("সময়", "মাস", []) => Ok(Value::Num(now_civil().1 as i64)),
             ("সময়", "দিন", []) => Ok(Value::Num(now_civil().2 as i64)),
             ("সময়", "ঘণ্টা", []) => Ok(Value::Num(now_time_of_day().0 as i64)),
             ("সময়", "মিনিট", []) => Ok(Value::Num(now_time_of_day().1 as i64)),
             ("সময়", "সেকেন্ড_অংশ", []) => Ok(Value::Num(now_time_of_day().2 as i64)),
-            ("সময়", "বর্তমান_তারিখ_লেখা", []) => {
-                let (y, mo, d) = now_civil();
-                let (h, mi, s) = now_time_of_day();
-                Ok(Value::Txt(format!("{y:04}-{mo:02}-{d:02} {h:02}:{mi:02}:{s:02}")))
+            ("সময়", "সপ্তাহের_দিন", []) => Ok(Value::Num(weekday_from_ms(now_epoch_ms()) as i64)),
+            ("সময়", "বর্তমান_তারিখ_লেখা", []) => Ok(Value::Txt(format_datetime_ms(now_epoch_ms()))),
+            // `বর্তমান_তারিখ_লেখা`-এর মতোই ফরম্যাট, কিন্তু "এখন"-এর বদলে যেকোনো
+            // দেওয়া epoch-মিলিসেকেন্ড মুহূর্তের জন্য — যেমন
+            // `ফাইলসিস্টেম.পরিবর্তনের_সময়()`-এর রিটার্ন ভ্যালু পড়ার-যোগ্য করতে।
+            ("সময়", "তারিখ_লেখা", [Value::Num(ms)]) => Ok(Value::Txt(format_datetime_ms(*ms))),
+            ("সময়", "ঘুমাও", [Value::Num(ms)]) => {
+                if *ms > 0 {
+                    std::thread::sleep(std::time::Duration::from_millis(*ms as u64));
+                }
+                Ok(Value::Null)
             }
 
             // র‍্যান্ডম
@@ -2160,10 +2168,24 @@ fn now_epoch_ms() -> i64 {
         .unwrap_or(0)
 }
 
+/// Process-start reference point for `সময়.সেকেন্ড()` — a real
+/// `std::time::Instant`, so readings only ever move forward even across an
+/// NTP/manual wall-clock adjustment mid-run. `SystemTime`-based elapsed-time
+/// math (the previous implementation) can't promise that: two `SystemTime`
+/// readings can disagree in either direction if the wall clock is stepped
+/// between them, which silently breaks the one thing a "monotonic clock for
+/// benchmarking" exists to guarantee.
+fn process_start() -> std::time::Instant {
+    static START: std::sync::OnceLock<std::time::Instant> = std::sync::OnceLock::new();
+    *START.get_or_init(std::time::Instant::now)
+}
+
 /// Howard Hinnant's `civil_from_days` — days-since-epoch to (year, month,
 /// day) in the proleptic Gregorian calendar. Public-domain algorithm, no
-/// date crate needed; correct for any i64 day count, not just "now".
-fn civil_from_days(z: i64) -> (i64, u32, u32) {
+/// date crate needed; correct for any i64 day count, not just "now". `pub`
+/// so `kolom_runtime`'s native `kl_time_*` functions can share this instead
+/// of maintaining their own copy of the same algorithm.
+pub fn civil_from_days(z: i64) -> (i64, u32, u32) {
     let z = z + 719468;
     let era = if z >= 0 { z } else { z - 146096 } / 146097;
     let doe = (z - era * 146097) as u64;
@@ -2177,17 +2199,45 @@ fn civil_from_days(z: i64) -> (i64, u32, u32) {
     (y, m, d)
 }
 
+/// (year, month, day) in UTC for an arbitrary epoch-millisecond timestamp —
+/// e.g. one `ফাইলসিস্টেম.পরিবর্তনের_সময়` handed back, not just "now".
+pub fn civil_from_ms(ms: i64) -> (i64, u32, u32) {
+    civil_from_days(ms.div_euclid(1000).div_euclid(86400))
+}
+
+/// (hour, minute, second) in UTC for an arbitrary epoch-millisecond
+/// timestamp.
+pub fn time_of_day_from_ms(ms: i64) -> (u32, u32, u32) {
+    let secs = ms.div_euclid(1000).rem_euclid(86400) as u32;
+    (secs / 3600, (secs % 3600) / 60, secs % 60)
+}
+
+/// 0 (রবিবার/Sunday) .. 6 (শনিবার/Saturday) — matches the common
+/// `Date.getDay()`-style convention. 1970-01-01 (epoch day 0) was a
+/// Thursday, hence the `+ 4` offset.
+pub fn weekday_from_ms(ms: i64) -> u32 {
+    let days = ms.div_euclid(1000).div_euclid(86400);
+    (days + 4).rem_euclid(7) as u32
+}
+
+/// `"YYYY-MM-DD HH:MM:SS"`, UTC, for an arbitrary epoch-millisecond
+/// timestamp — the shared formatter behind both `বর্তমান_তারিখ_লেখা()`
+/// ("now") and `তারিখ_লেখা(ms)` (an arbitrary given moment).
+pub fn format_datetime_ms(ms: i64) -> String {
+    let (y, mo, d) = civil_from_ms(ms);
+    let (h, mi, s) = time_of_day_from_ms(ms);
+    format!("{y:04}-{mo:02}-{d:02} {h:02}:{mi:02}:{s:02}")
+}
+
 /// (year, month, day) for the current moment — UTC, to sidestep timezone
 /// dependence.
 fn now_civil() -> (i64, u32, u32) {
-    let days = now_epoch_ms().div_euclid(1000).div_euclid(86400);
-    civil_from_days(days)
+    civil_from_ms(now_epoch_ms())
 }
 
 /// (hour, minute, second) for the current moment — UTC.
 fn now_time_of_day() -> (u32, u32, u32) {
-    let secs = now_epoch_ms().div_euclid(1000).rem_euclid(86400) as u32;
-    (secs / 3600, (secs % 3600) / 60, secs % 60)
+    time_of_day_from_ms(now_epoch_ms())
 }
 
 /// `সংখ্যায়`/`দশমিকে` — Kolom source itself accepts both Bengali (২৫) and
@@ -2337,5 +2387,59 @@ mod tests {
         let mut input = FakeInput(VecDeque::new());
         let out = run_src(src, &mut input).unwrap();
         assert_eq!(out, "\n");
+    }
+
+    // ---- সময় (time) ----
+
+    #[test]
+    fn civil_from_ms_at_epoch_is_1970_01_01() {
+        assert_eq!(civil_from_ms(0), (1970, 1, 1));
+    }
+
+    #[test]
+    fn civil_and_time_of_day_from_ms_agree_with_hand_computed_offset() {
+        // 93_800_000 ms = 1 day (86_400_000 ms) + 7_400_000 ms
+        // (2h 3m 20s) past the epoch.
+        assert_eq!(civil_from_ms(93_800_000), (1970, 1, 2));
+        assert_eq!(time_of_day_from_ms(93_800_000), (2, 3, 20));
+    }
+
+    #[test]
+    fn weekday_from_ms_epoch_is_thursday() {
+        // 1970-01-01 was a Thursday: 0=রবিবার..6=শনিবার, so Thursday = 4.
+        assert_eq!(weekday_from_ms(0), 4);
+        // One week later must land on the same weekday.
+        assert_eq!(weekday_from_ms(7 * 86_400_000), 4);
+    }
+
+    #[test]
+    fn format_datetime_ms_matches_civil_and_time_of_day() {
+        assert_eq!(format_datetime_ms(0), "1970-01-01 00:00:00");
+        assert_eq!(format_datetime_ms(93_800_000), "1970-01-02 02:03:20");
+    }
+
+    #[test]
+    fn somoy_tarikh_lekha_formats_an_arbitrary_given_timestamp_not_just_now() {
+        let src = "অ্যাপ {\n    লেখো(সময়.তারিখ_লেখা(৯৩৮০০০০০))\n}\n";
+        let mut input = FakeInput(VecDeque::new());
+        let out = run_src(src, &mut input).unwrap();
+        assert_eq!(out, "1970-01-02 02:03:20\n");
+    }
+
+    #[test]
+    fn somoy_sekend_is_monotonic_across_a_sleep() {
+        // Regression test for the bug this replaced: a SystemTime-based
+        // reading could go backward across a wall-clock adjustment, which
+        // this can no longer do since it's Instant-based (process-start-
+        // relative, not wall-clock epoch).
+        let src = "অ্যাপ {\n    \
+            ধরি ক = সময়.সেকেন্ড()\n    \
+            সময়.ঘুমাও(৫০)\n    \
+            ধরি খ = সময়.সেকেন্ড()\n    \
+            যদি (খ > ক) {\n        লেখো(\"ঠিক\")\n    } নাহলে {\n        লেখো(\"ভুল\")\n    }\n\
+        }\n";
+        let mut input = FakeInput(VecDeque::new());
+        let out = run_src(src, &mut input).unwrap();
+        assert_eq!(out, "ঠিক\n");
     }
 }

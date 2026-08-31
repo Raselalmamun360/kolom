@@ -1998,7 +1998,17 @@ impl Gen {
             ("সময়", "ঘণ্টা") => Ok(CVal::Num(self.call_rt(b, "kl_time_hour", &[]))),
             ("সময়", "মিনিট") => Ok(CVal::Num(self.call_rt(b, "kl_time_minute", &[]))),
             ("সময়", "সেকেন্ড_অংশ") => Ok(CVal::Num(self.call_rt(b, "kl_time_second_part", &[]))),
+            ("সময়", "সপ্তাহের_দিন") => Ok(CVal::Num(self.call_rt(b, "kl_time_weekday", &[]))),
             ("সময়", "বর্তমান_তারিখ_লেখা") => Ok(CVal::Txt(self.call_rt(b, "kl_time_now_str", &[]))),
+            ("সময়", "তারিখ_লেখা") => {
+                let ms = self.lower_expr_num(b, &args[0], env)?;
+                Ok(CVal::Txt(self.call_rt(b, "kl_time_format_ms", &[ms])))
+            }
+            ("সময়", "ঘুমাও") => {
+                let ms = self.lower_expr_num(b, &args[0], env)?;
+                self.call_rt_void(b, "kl_time_sleep_ms", &[ms]);
+                Ok(CVal::Void)
+            }
 
             _ => Err(format!(
                 "M4 codegen: '{}.{}' এখনো সমর্থিত নয় (গ্রাফিক্স UI ইঞ্জিনের অংশ)",
@@ -3023,7 +3033,10 @@ pub fn emit_for(prog: &Program, target: crate::link::Target) -> Result<Vec<u8>, 
         ("kl_time_hour", &[], &[i64t]),
         ("kl_time_minute", &[], &[i64t]),
         ("kl_time_second_part", &[], &[i64t]),
+        ("kl_time_weekday", &[], &[i64t]),
         ("kl_time_now_str", &[], &[ptr_ty]),
+        ("kl_time_format_ms", &[i64t], &[ptr_ty]),
+        ("kl_time_sleep_ms", &[i64t], &[]),
     ];
     let mut rt = HashMap::new();
     for (name, params, rets) in stdlib_imports {

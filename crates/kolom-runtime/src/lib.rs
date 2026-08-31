@@ -2174,6 +2174,12 @@ pub extern "C" fn kl_sys_env(name: *mut u8) -> *mut u8 {
 // আগের বাস্তবায়ন ছিল, রিমুভড, কিন্তু নাম দুটো ধরে রাখা হলো ধারাবাহিকতার
 // জন্য) — `কলম বিল্ড`-এ `সময়.এখন_মিলিসেকেন্ড()` কল করলে "সমর্থিত নয়" ত্রুটি
 // দিত। এখানে বাকি সব ক্যালেন্ডার ফাংশনের সাথে একবারে ফিক্স করা হলো।
+//
+// ক্যালেন্ডার গাণিতিক (Howard Hinnant's civil_from_days ইত্যাদি) নিজে থেকে
+// আর ডুপ্লিকেট করা হয় না — `kolom_interp`-এর pub ফাংশন সরাসরি কল করা হয়
+// (এই ক্রেট এমনিতেই `kolom_interp`-এর উপর নির্ভরশীল, `console.rs`-এর
+// `LineInput` ট্রেইটের জন্য), যাতে দুই কপি কখনো একে অপরের থেকে আলাদা হয়ে
+// না যায়।
 // ============================================================================
 
 #[no_mangle]
@@ -2184,68 +2190,57 @@ pub extern "C" fn kl_time_now_ms() -> i64 {
         .unwrap_or(0)
 }
 
+/// Monotonic seconds-since-process-start — see `kolom_interp`'s
+/// `process_start` doc comment for why this must be `Instant`-based rather
+/// than a `SystemTime` difference (a wall-clock step mid-run can otherwise
+/// make two readings disagree about which one came first).
 #[no_mangle]
 pub extern "C" fn kl_time_clock() -> f64 {
-    std::time::SystemTime::now()
-        .duration_since(std::time::UNIX_EPOCH)
-        .map(|d| d.as_secs_f64())
-        .unwrap_or(0.0)
-}
-
-/// Howard Hinnant's `civil_from_days` — days-since-epoch to (year, month,
-/// day) in the proleptic Gregorian calendar. Public-domain algorithm, no
-/// date crate needed.
-fn civil_from_days(z: i64) -> (i64, u32, u32) {
-    let z = z + 719468;
-    let era = if z >= 0 { z } else { z - 146096 } / 146097;
-    let doe = (z - era * 146097) as u64;
-    let yoe = (doe - doe / 1460 + doe / 36524 - doe / 146096) / 365;
-    let y = yoe as i64 + era * 400;
-    let doy = doe - (365 * yoe + yoe / 4 - yoe / 100);
-    let mp = (5 * doy + 2) / 153;
-    let d = (doy - (153 * mp + 2) / 5 + 1) as u32;
-    let m = if mp < 10 { mp + 3 } else { mp - 9 } as u32;
-    let y = if m <= 2 { y + 1 } else { y };
-    (y, m, d)
-}
-
-fn now_civil() -> (i64, u32, u32) {
-    let days = kl_time_now_ms().div_euclid(1000).div_euclid(86400);
-    civil_from_days(days)
-}
-
-fn now_time_of_day() -> (u32, u32, u32) {
-    let secs = kl_time_now_ms().div_euclid(1000).rem_euclid(86400) as u32;
-    (secs / 3600, (secs % 3600) / 60, secs % 60)
+    static START: std::sync::OnceLock<std::time::Instant> = std::sync::OnceLock::new();
+    START.get_or_init(std::time::Instant::now).elapsed().as_secs_f64()
 }
 
 #[no_mangle]
 pub extern "C" fn kl_time_year() -> i64 {
-    now_civil().0
+    kolom_interp::civil_from_ms(kl_time_now_ms()).0
 }
 #[no_mangle]
 pub extern "C" fn kl_time_month() -> i64 {
-    now_civil().1 as i64
+    kolom_interp::civil_from_ms(kl_time_now_ms()).1 as i64
 }
 #[no_mangle]
 pub extern "C" fn kl_time_day() -> i64 {
-    now_civil().2 as i64
+    kolom_interp::civil_from_ms(kl_time_now_ms()).2 as i64
 }
 #[no_mangle]
 pub extern "C" fn kl_time_hour() -> i64 {
-    now_time_of_day().0 as i64
+    kolom_interp::time_of_day_from_ms(kl_time_now_ms()).0 as i64
 }
 #[no_mangle]
 pub extern "C" fn kl_time_minute() -> i64 {
-    now_time_of_day().1 as i64
+    kolom_interp::time_of_day_from_ms(kl_time_now_ms()).1 as i64
 }
 #[no_mangle]
 pub extern "C" fn kl_time_second_part() -> i64 {
-    now_time_of_day().2 as i64
+    kolom_interp::time_of_day_from_ms(kl_time_now_ms()).2 as i64
+}
+#[no_mangle]
+pub extern "C" fn kl_time_weekday() -> i64 {
+    kolom_interp::weekday_from_ms(kl_time_now_ms()) as i64
 }
 #[no_mangle]
 pub extern "C" fn kl_time_now_str() -> *mut u8 {
-    let (y, mo, d) = now_civil();
-    let (h, mi, s) = now_time_of_day();
-    str_from_rust(&format!("{y:04}-{mo:02}-{d:02} {h:02}:{mi:02}:{s:02}"))
+    str_from_rust(&kolom_interp::format_datetime_ms(kl_time_now_ms()))
+}
+/// As `kl_time_now_str`, but for an arbitrary given moment rather than
+/// "now" — backs `সময়.তারিখ_লেখা(ms)`.
+#[no_mangle]
+pub extern "C" fn kl_time_format_ms(ms: i64) -> *mut u8 {
+    str_from_rust(&kolom_interp::format_datetime_ms(ms))
+}
+#[no_mangle]
+pub extern "C" fn kl_time_sleep_ms(ms: i64) {
+    if ms > 0 {
+        std::thread::sleep(std::time::Duration::from_millis(ms as u64));
+    }
 }

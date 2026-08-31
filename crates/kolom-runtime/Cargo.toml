@@ -9,7 +9,11 @@ crate-type = ["staticlib", "rlib"]
 
 [dependencies]
 kolom-syntax = { path = "../kolom-syntax" }
+# Portable (no platform-specific deps of its own — see cross_linux.rs/
+# cross_android.rs) — used on every target for the সময় calendar helpers,
+# not just by console.rs's Win32 window (which is genuinely Windows-only,
+# hence windows-sys staying below).
+kolom-interp = { path = "../kolom-interp" }
 
 [target."cfg(windows)".dependencies]
 windows-sys = { version = "0.61.2", features = ["Win32_Foundation", "Win32_Graphics_Gdi", "Win32_UI_WindowsAndMessaging", "Win32_System_LibraryLoader", "Win32_Globalization", "Win32_UI_Input_KeyboardAndMouse", "Win32_System_DataExchange", "Win32_System_Memory"] }
-kolom-interp = { path = "../kolom-interp" }
