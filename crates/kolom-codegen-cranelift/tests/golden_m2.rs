@@ -6,6 +6,11 @@ mod harness;
 use harness::{assert_matches_reference, assert_matches_reference_module, run};
 
 #[test]
+fn golden_48_compound_assign() {
+    assert_matches_reference("48_compound_assign");
+}
+
+#[test]
 fn golden_07_arrays() {
     assert_matches_reference("07_arrays");
 }

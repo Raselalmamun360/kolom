@@ -1172,6 +1172,16 @@ impl Gen {
             ExprKind::Binary(op, l, r) => self.lower_binary(b, *op, l, r, env),
             ExprKind::Assign(lv, rhs) => self.lower_assign(b, lv, rhs, env),
             ExprKind::Postfix(base, suffixes) => {
+                // A suffix-less Postfix (`base` wrapped with no `[...]`/
+                // `.field`/`(...)` at all) is just `base` — compound-assign
+                // desugaring (`x += rhs` -> `x = <postfix x> + rhs`) builds
+                // exactly this for a plain scalar target, since it reuses
+                // the same idx/field suffix list the indexed/field cases
+                // use, which is empty here. Mirrors the interpreter, which
+                // falls back to a plain variable lookup in the same case.
+                if suffixes.is_empty() {
+                    return self.lower_expr(b, base, env);
+                }
                 if let ExprKind::Ident(id) = &base.kind {
                     if let [Suffix::Call(args, _)] = suffixes.as_slice() {
                         match id.name.as_str() {

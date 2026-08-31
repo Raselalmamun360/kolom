@@ -232,6 +232,14 @@ impl Lx {
             if !closed {
                 self.err(sl, sc, "কমেন্ট বন্ধ হয়নি — '*/' পাওয়া যায়নি".to_string());
             }
+        } else if self.peek2() == Some('=') {
+            self.toks.push(Token {
+                kind: TokenKind::Op("/="),
+                line: self.line,
+                col: self.col,
+            });
+            self.i += 2;
+            self.col += 2;
         } else {
             self.toks.push(Token {
                 kind: TokenKind::Op("/"),

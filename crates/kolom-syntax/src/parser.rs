@@ -666,16 +666,25 @@ impl P {
                     let pos = base.pos;
                     self.bump();
                     let rhs = self.parse_assign();
-                    // desugar: x += rhs → x = x + rhs
+                    // desugar: x += rhs → x = x + rhs (and likewise for
+                    // arr[i] += rhs, p.field += rhs) — the read side must
+                    // apply the same idx/field suffixes the write side uses,
+                    // and the write-back LValue must keep them too, or this
+                    // silently reassigns the whole base variable instead.
+                    let mut sfx: Vec<Suffix> = idx
+                        .iter()
+                        .map(|e| Suffix::Index(Box::new(e.clone()), pos))
+                        .collect();
+                    if let Some(f) = &field {
+                        sfx.push(Suffix::Field(f.clone()));
+                    }
                     let cur = Expr {
                         kind: ExprKind::Postfix(
                             Box::new(Expr {
                                 kind: ExprKind::Ident(base.clone()),
                                 pos,
                             }),
-                            idx.iter()
-                                .map(|e| Suffix::Index(Box::new(e.clone()), pos))
-                                .collect(),
+                            sfx,
                         ),
                         pos,
                     };
@@ -684,7 +693,7 @@ impl P {
                         pos,
                     };
                     return Expr {
-                        kind: ExprKind::Assign(LValue { base, idx: Vec::new(), field: None }, Box::new(combined)),
+                        kind: ExprKind::Assign(LValue { base, idx, field }, Box::new(combined)),
                         pos,
                     };
                 }
