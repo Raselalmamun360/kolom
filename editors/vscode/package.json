@@ -2,7 +2,8 @@
   "name": "kolom",
   "displayName": "Kolom (কলম)",
   "description": "Syntax highlighting and diagnostics for Kolom, a Bengali programming language",
-  "version": "0.2.0",
+  "version": "0.7.0",
+  "icon": "icon.png",
   "publisher": "kolom-lang",
   "license": "MIT OR Apache-2.0",
   "repository": {
@@ -37,9 +38,53 @@
           "type": "string",
           "default": "",
           "description": "Path to the kolom-lsp executable. Leave empty to auto-detect: looks next to whichever `kolom`/`kolom.exe` is on PATH first, then falls back to a bare `kolom-lsp` on PATH."
+        },
+        "kolom.cliPath": {
+          "type": "string",
+          "default": "",
+          "description": "Path to the kolom CLI executable, used by 'Kolom: Console-এ চালাও'. Leave empty to auto-detect from PATH."
         }
       }
-    }
+    },
+    "viewsContainers": {
+      "panel": [
+        {
+          "id": "kolomConsolePanel",
+          "title": "কলম কনসোল",
+          "icon": "resources/console-icon.svg"
+        }
+      ],
+      "activitybar": [
+        {
+          "id": "kolomSidebar",
+          "title": "কলম",
+          "icon": "resources/console-icon.svg"
+        }
+      ]
+    },
+    "views": {
+      "kolomConsolePanel": [
+        {
+          "id": "kolom.consoleView",
+          "name": "",
+          "type": "webview"
+        }
+      ],
+      "kolomSidebar": [
+        {
+          "id": "kolom.consoleViewSidebar",
+          "name": "কনসোল",
+          "type": "webview"
+        }
+      ]
+    },
+    "commands": [
+      {
+        "command": "kolom.runInConsole",
+        "title": "Kolom: Console-এ চালাও",
+        "icon": "$(play)"
+      }
+    ]
   },
   "scripts": {
     "vscode:prepublish": "npm run compile",

@@ -12,6 +12,7 @@ import {
   ServerOptions,
   TransportKind,
 } from "vscode-languageclient/node";
+import { KolomConsoleViewProvider } from "./consoleView";
 
 let client: LanguageClient | undefined;
 
@@ -62,6 +63,63 @@ function resolveLspPath(): string {
   return exeName("kolom-lsp");
 }
 
+/** Same resolution order as `resolveLspPath`, but for the `kolom` CLI itself. */
+function resolveKolomCliPath(): string {
+  const configured = vscode.workspace
+    .getConfiguration("kolom")
+    .get<string>("cliPath", "");
+  if (configured && configured.trim().length > 0) {
+    return configured.trim();
+  }
+  const kolomExe = findOnPath("kolom");
+  if (kolomExe) {
+    return kolomExe;
+  }
+  return exeName("kolom");
+}
+
+/** Where a typed `kolom` command (not tied to a specific file) should run. */
+function resolveCommandCwd(): string {
+  const editor = vscode.window.activeTextEditor;
+  if (editor && editor.document.languageId === "kolom") {
+    return path.dirname(editor.document.fileName);
+  }
+  const folder = vscode.workspace.workspaceFolders?.[0];
+  return folder ? folder.uri.fsPath : process.cwd();
+}
+
+/**
+ * Backs both the Command Palette entry and the console panel's own
+ * button/Enter. `commandLine` is the panel input box's raw text: empty means
+ * "run the active `.ক` file" (also what the Palette command always passes);
+ * anything else is a full `kolom` command line — `kolom` already accepts
+ * Bangla subcommand names directly (`ইনস্টল`, `যোগ`, `মুছো`, ...), so this
+ * just splits on whitespace and hands the words straight through, no
+ * translation needed.
+ */
+async function runCommandInConsole(provider: KolomConsoleViewProvider, commandLine: string): Promise<void> {
+  const kolomPath = resolveKolomCliPath();
+  const trimmed = commandLine.trim();
+  if (trimmed.length === 0) {
+    const editor = vscode.window.activeTextEditor;
+    if (!editor || editor.document.languageId !== "kolom") {
+      void vscode.window.showErrorMessage(
+        "কলম: প্রথমে একটি .ক ফাইল খুলুন, অথবা কনসোলের বক্সে একটি kolom কমান্ড লিখুন।",
+      );
+      return;
+    }
+    if (editor.document.isDirty) {
+      await editor.document.save();
+    }
+    const filePath = editor.document.fileName;
+    await provider.run(kolomPath, ["run", filePath], path.dirname(filePath), path.basename(filePath));
+    return;
+  }
+
+  const args = trimmed.split(/\s+/);
+  await provider.run(kolomPath, args, resolveCommandCwd(), `kolom ${trimmed}`);
+}
+
 export function activate(context: vscode.ExtensionContext): void {
   const lspPath = resolveLspPath();
 
@@ -93,6 +151,20 @@ export function activate(context: vscode.ExtensionContext): void {
       void client?.stop();
     },
   });
+
+  const consoleProvider = new KolomConsoleViewProvider((commandLine) => {
+    void runCommandInConsole(consoleProvider, commandLine);
+  });
+  context.subscriptions.push(
+    vscode.window.registerWebviewViewProvider(KolomConsoleViewProvider.panelViewId, consoleProvider),
+  );
+  context.subscriptions.push(
+    vscode.window.registerWebviewViewProvider(KolomConsoleViewProvider.sidebarViewId, consoleProvider),
+  );
+  context.subscriptions.push(
+    vscode.commands.registerCommand("kolom.runInConsole", () => runCommandInConsole(consoleProvider, "")),
+  );
+  context.subscriptions.push({ dispose: () => consoleProvider.dispose() });
 }
 
 export function deactivate(): Thenable<void> | undefined {

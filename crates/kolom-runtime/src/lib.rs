@@ -1,4 +1,5 @@
 pub mod ui;
+pub mod console;
 
 use std::alloc::{alloc, dealloc, Layout};
 use std::io::{Read, Write};

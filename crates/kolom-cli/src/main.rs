@@ -18,6 +18,8 @@ const HELP: &str = "কলম — বাংলা প্রোগ্রামি
   kolom new <name>       একই কাজ (ইংরেজি)
   kolom পাতা <ফাইল.ক>    বিল্ট-ইন এডিটর (লাইভ ত্রুটি + Ctrl+R চালাও)
   kolom edit <file.k>    একই কাজ (ইংরেজি)
+  kolom কনসোল <ফাইল.ক>    নেটিভ কলম কনসোল উইন্ডোতে চালাও (বাংলা রেন্ডারিং ঠিকভাবে)
+  kolom console <file.k>  একই কাজ (ইংরেজি)
   kolom যোগ <নাম> <git-url> --রেফ <tag>   নির্ভরতা যোগ করো (কলম.toml-এ)
   kolom add <name> <git-url> --ref <tag>  একই কাজ (ইংরেজি)
   kolom ইনস্টল            সব নির্ভরতা ফেচ করো (কলম.lock লেখে)
@@ -40,6 +42,7 @@ fn main() -> ExitCode {
         }
         Some("new") | Some("নতুন") => cmd_new(args.get(1)),
         Some("edit") | Some("পাতা") => cmd_edit(args.get(1)),
+        Some("console") | Some("কনসোল") => cmd_console(args.get(1), args.get(2..).unwrap_or(&[])),
         Some("add") | Some("যোগ") => cmd_add(&args[1..]),
         Some("install") | Some("ইনস্টল") => cmd_install(),
         Some("remove") | Some("মুছো") => cmd_remove(args.get(1)),
@@ -132,6 +135,25 @@ fn cmd_run(path: Option<&String>, extra_args: &[String]) -> ExitCode {
                 "{}",
                 format_error("রানটাইম ত্রুটি", &name, e.line, e.col, &e.message)
             );
+            ExitCode::FAILURE
+        }
+    }
+}
+
+/// As `cmd_run`, but shows output in a native `কলম কনসোল` window instead of
+/// the real terminal — terminals render Bengali reordering vowel signs
+/// (কার) incorrectly (a fixed monospace-grid limitation shared by every
+/// terminal emulator), while the console window shapes text with the same
+/// USP10/Uniscribe path `ডিসপ্লে`/`টেক্সট` already use.
+fn cmd_console(path: Option<&String>, extra_args: &[String]) -> ExitCode {
+    let (prog, _file, _name) = match check_program(path) {
+        Ok(x) => x,
+        Err(c) => return c,
+    };
+    match kolom_runtime::console::run_console(&prog, extra_args.to_vec()) {
+        Ok(()) => ExitCode::SUCCESS,
+        Err(e) => {
+            eprintln!("ত্রুটি: {}", e);
             ExitCode::FAILURE
         }
     }

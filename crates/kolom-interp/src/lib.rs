@@ -92,10 +92,32 @@ impl Scope {
     }
 }
 
+/// Injectable source for `পড়ো_লাইন`. `Ok(None)` means EOF, mirroring
+/// `std::io::Read::read_line`'s own `Ok(0)`-on-EOF convention.
+pub trait LineInput {
+    fn read_line(&mut self) -> std::io::Result<Option<String>>;
+}
+
+/// The default: real process stdin. Used by `run`/`run_with_argv` so every
+/// existing caller keeps today's exact behavior.
+pub struct StdinInput;
+
+impl LineInput for StdinInput {
+    fn read_line(&mut self) -> std::io::Result<Option<String>> {
+        let mut line = String::new();
+        match std::io::stdin().read_line(&mut line) {
+            Ok(0) => Ok(None),
+            Ok(_) => Ok(Some(line.trim_end_matches(['\n', '\r']).to_string())),
+            Err(e) => Err(e),
+        }
+    }
+}
+
 struct Interp<'o> {
     funcs: HashMap<String, Rc<FuncDecl>>,
     scopes: Vec<Scope>,
     out: &'o mut dyn Write,
+    input: &'o mut dyn LineInput,
     rng: u64,
     net: HashMap<u32, std::net::TcpStream>,
     net_next: u32,
@@ -113,6 +135,18 @@ pub fn run(prog: &Program, out: &mut dyn Write) -> Result<(), InterpError> {
 /// the golden-test harness) has no such arguments, hence the plain `run`
 /// wrapper defaulting to an empty vector.
 pub fn run_with_argv(prog: &Program, out: &mut dyn Write, argv: Vec<String>) -> Result<(), InterpError> {
+    run_with_io(prog, out, argv, &mut StdinInput)
+}
+
+/// As `run_with_argv`, but with `পড়ো_লাইন`'s source injectable too — used by
+/// `kolom_runtime::console`, which supplies a console-window-backed
+/// `LineInput` instead of real stdin.
+pub fn run_with_io(
+    prog: &Program,
+    out: &mut dyn Write,
+    argv: Vec<String>,
+    input: &mut dyn LineInput,
+) -> Result<(), InterpError> {
     let seed_ms = std::time::SystemTime::now()
         .duration_since(std::time::UNIX_EPOCH)
         .map(|d| d.as_millis() as u64)
@@ -121,6 +155,7 @@ pub fn run_with_argv(prog: &Program, out: &mut dyn Write, argv: Vec<String>) -> 
         funcs: HashMap::new(),
         scopes: vec![Scope::new()],
         out,
+        input,
         rng: 0x2545F4914F6CDD1D ^ seed_ms,
         net: HashMap::new(),
         net_next: 1,
@@ -1473,9 +1508,9 @@ impl<'o> Interp<'o> {
             if !args.is_empty() {
                 return Err(err(pos, "'পড়ো_লাইন' কোনো আর্গুমেন্ট নেয় না"));
             }
-            let mut line = String::new();
-            return match std::io::stdin().read_line(&mut line) {
-                Ok(_) => Ok(Value::Txt(line.trim_end_matches(['\n', '\r']).to_string())),
+            return match self.input.read_line() {
+                Ok(Some(line)) => Ok(Value::Txt(line)),
+                Ok(None) => Ok(Value::Txt(String::new())),
                 Err(_) => Err(err(pos, "ইনপুট পড়া যায়নি")),
             };
         }
@@ -2259,5 +2294,48 @@ fn numeric_pair(l: Value, r: Value, pos: Pos) -> Result<(f64, f64), InterpError>
         (Value::Dec(a), Value::Num(b)) => Ok((a, b as f64)),
         (Value::Dec(a), Value::Dec(b)) => Ok((a, b)),
         _ => Err(err(pos, "এই অপারেটরের অপারেন্ড সংখ্যা হতে হবে")),
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::collections::VecDeque;
+
+    /// A scripted `LineInput` for tests — feeds queued lines, then reports
+    /// EOF (`Ok(None)`) once exhausted, exactly like `kolom_runtime::console`
+    /// will feed lines typed into the console window.
+    struct FakeInput(VecDeque<String>);
+
+    impl LineInput for FakeInput {
+        fn read_line(&mut self) -> std::io::Result<Option<String>> {
+            Ok(self.0.pop_front())
+        }
+    }
+
+    fn run_src(src: &str, input: &mut dyn LineInput) -> Result<String, InterpError> {
+        let (tokens, lex_errs) = kolom_lexer::lex(src);
+        assert!(lex_errs.is_empty(), "lex errors: {:?}", lex_errs);
+        let (prog, parse_errs) = kolom_syntax::parse(tokens);
+        assert!(parse_errs.is_empty(), "parse errors: {:?}", parse_errs);
+        let mut out: Vec<u8> = Vec::new();
+        run_with_io(&prog, &mut out, Vec::new(), input)?;
+        Ok(String::from_utf8_lossy(&out).into_owned())
+    }
+
+    #[test]
+    fn run_with_io_reads_from_injected_line_input_not_real_stdin() {
+        let src = "অ্যাপ {\n    ধরি ক = পড়ো_লাইন()\n    ধরি খ = পড়ো_লাইন()\n    লেখো(ক)\n    লেখো(খ)\n}\n";
+        let mut input = FakeInput(VecDeque::from(["হ্যালো".to_string(), "বিশ্ব".to_string()]));
+        let out = run_src(src, &mut input).unwrap();
+        assert_eq!(out, "হ্যালো\nবিশ্ব\n");
+    }
+
+    #[test]
+    fn run_with_io_eof_yields_empty_string_like_real_stdin_eof() {
+        let src = "অ্যাপ {\n    ধরি ক = পড়ো_লাইন()\n    লেখো(ক)\n}\n";
+        let mut input = FakeInput(VecDeque::new());
+        let out = run_src(src, &mut input).unwrap();
+        assert_eq!(out, "\n");
     }
 }

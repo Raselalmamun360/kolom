@@ -22,7 +22,7 @@
 #![allow(static_mut_refs)]
 
 #[cfg(windows)]
-mod imp {
+pub(crate) mod imp {
     use std::ffi::c_void;
     use windows_sys::core::PCWSTR;
     use windows_sys::Win32::Foundation::{COLORREF, HINSTANCE, HWND, LPARAM, LRESULT, POINT, RECT, WPARAM};
@@ -139,7 +139,7 @@ mod imp {
         }
     }
 
-    fn wide(s: &str) -> Vec<u16> {
+    pub(crate) fn wide(s: &str) -> Vec<u16> {
         s.encode_utf16().chain(std::iter::once(0)).collect()
     }
 
@@ -228,7 +228,7 @@ mod imp {
     const SSA_GLYPHS: u32 = 0x00000080;
     const SSA_FALLBACK: u32 = 0x00000020;
 
-    unsafe fn load_usp() {
+    pub(crate) unsafe fn load_usp() {
         if USP_TRIED {
             return;
         }
@@ -250,11 +250,11 @@ mod imp {
         }
     }
 
-    fn wlen(w: &[u16]) -> i32 {
+    pub(crate) fn wlen(w: &[u16]) -> i32 {
         w.iter().position(|&c| c == 0).unwrap_or(w.len()) as i32
     }
 
-    unsafe fn draw_shaped(dc: HDC, txt: &[u16], x: i32, y: i32) {
+    pub(crate) unsafe fn draw_shaped(dc: HDC, txt: &[u16], x: i32, y: i32) {
         let n = wlen(txt);
         if let (Some(analyse), Some(out), Some(free)) = (USP_ANALYSE, USP_OUT, USP_FREE) {
             let mut ssa: *mut c_void = std::ptr::null_mut();
@@ -282,7 +282,7 @@ mod imp {
         TextOutW(dc, x, y, txt.as_ptr(), n);
     }
 
-    unsafe fn ui_font() -> HFONT {
+    pub(crate) unsafe fn ui_font() -> HFONT {
         let face = wide("Nirmala UI");
         CreateFontW(
             -26,

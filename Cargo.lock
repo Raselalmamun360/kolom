@@ -357,6 +357,7 @@ dependencies = [
  "kolom-interp",
  "kolom-lexer",
  "kolom-pkg",
+ "kolom-runtime",
  "kolom-sema",
  "kolom-syntax",
 ]
@@ -417,6 +418,8 @@ dependencies = [
 name = "kolom-runtime"
 version = "0.1.0"
 dependencies = [
+ "kolom-interp",
+ "kolom-syntax",
  "windows-sys 0.61.2",
 ]
 
