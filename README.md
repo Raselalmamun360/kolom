@@ -74,7 +74,7 @@ kolom বিল্ড আমার_প্রকল্প/main.ক linux    # Lin
 
 ## অবস্থা
 
-**সংস্করণ ০.১.০** — ভাষা ও কম্পাইলার কাজ করে, তবে এখনো Draft।
+**সংস্করণ ১.০.০** — ভাষা ও কম্পাইলার কাজ করে; স্পেসিফিকেশন ডকুমেন্টগুলো (`language.md`/`grammer.md`/`compiler.md`/`engine.md`) এখনো আনুষ্ঠানিকভাবে Draft হিসেবে চিহ্নিত (`roadmap.md` §১৩)।
 
 | | অবস্থা |
 |---|---|
@@ -169,9 +169,11 @@ language; it was designed for Bengali speakers from the start.
 - Native UI (windows, buttons, canvas) is part of the language.
 - Also runs interpreted for fast iteration.
 
-**Status** — v0.1.0. Interpreter, native compiler, standard library, and UI
+**Status** — v1.0.0. Interpreter, native compiler, standard library, and UI
 all work on Windows x64. Linux x64 is supported for console programs, and
 cross-compiles from Windows to a single static musl binary. macOS is planned.
+The specification documents (`language.md`/`grammer.md`/`compiler.md`/
+`engine.md`) are still formally marked Draft (`roadmap.md` §১৩).
 
 **Build from source**
 

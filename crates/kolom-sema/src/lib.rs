@@ -1158,6 +1158,7 @@ impl Ck {
                 if matches!(
                     id.name.as_str(),
                     "লেখো" | "দৈর্ঘ্য" | "কপি" | "শেয়ার_করো" | "মান" | "বসাও" | "লেখায়" | "সাজাও"
+                        | "সংখ্যায়" | "দশমিকে"
                         | "ম্যাপ_তৈরি" | "চাবি_গুলো" | "আছে_কি" | "চাবি_মুছো" | "পড়ো_লাইন"
                 ) || self.funcs.contains_key(&id.name) || self.structs.contains_key(&id.name)
                 {
@@ -1343,6 +1344,8 @@ impl Ck {
                                         | "বসাও"
                                         | "লেখায়"
                                         | "সাজাও"
+                                        | "সংখ্যায়"
+                                        | "দশমিকে"
                                         | "ম্যাপ_তৈরি"
                                         | "চাবি_গুলো"
                                         | "আছে_কি"
@@ -1772,6 +1775,23 @@ impl Ck {
                     self.err(pos, "'লেখায়'-এর আগে 'মান(x)' দিয়ে ভেতরের মান নিন".to_string());
                 }
                 Ty::Txt
+            }
+            // `লেখায়`-এর বিপরীত — 'লেখা' পার্স করে 'সংখ্যা'/'দশমিক' দেয়।
+            // ব্যর্থ হলে (অসংখ্যাসূচক ইনপুট) রানটাইম ত্রুটি — `চেষ্টা`/`ধরো`
+            // দিয়ে ধরা যায়, নীরবে ০ ফেরত দেয় না।
+            "সংখ্যায়" | "দশমিকে" => {
+                if args.len() != 1 {
+                    self.err(
+                        pos,
+                        format!("'{}' ১টি আর্গুমেন্ট নেয়, {}টি পেয়েছে", name, bn_num(args.len() as u32)),
+                    );
+                    return if name == "সংখ্যায়" { Ty::Num } else { Ty::Dec };
+                }
+                let t = self.expr(&args[0]).unwrap_or(Ty::Unknown);
+                if !matches!(t, Ty::Txt | Ty::Unknown | Ty::Err) {
+                    self.err(pos, format!("'{}' 'লেখা' নেয়, '{}' নয়", name, t));
+                }
+                if name == "সংখ্যায়" { Ty::Num } else { Ty::Dec }
             }
             _ => self.call_named_fn(name, pos, args),
         }

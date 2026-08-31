@@ -15,7 +15,7 @@
 | Text     | টেক্সট                                                      |
 | Button   | বাটন                                                        |
 | Input    | ইনপুট                                                       |
-| JSON     | JSON (ভবিষ্যতে বাংলাকরণ করা হলে "জেসন" ব্যবহার করা যেতে পারে) |
+| JSON     | জেসন (`জেসন` স্ট্যান্ডার্ড লাইব্রেরি মডিউলের নাম)           |
 | CLI      | CLI                                                         |
 | Copy     | কপি                                                          |
 | Memory   | মেমরি                                                        |
@@ -37,3 +37,11 @@
 | Hot Reload | হট রিলোড                                                 |
 | Test Harness | টেস্ট হার্নেস                                           |
 | Golden Test | গোল্ডেন টেস্ট                                            |
+| Matrix | ম্যাট্রিক্স                                                    |
+| Geometry | জ্যামিতি                                                     |
+| Statistics | পরিসংখ্যান                                                 |
+| Sort | সাজাও                                                          |
+| Manifest | ম্যানিফেস্ট                                                 |
+| Lock file | লক ফাইল                                                   |
+| Dependency | নির্ভরতা                                                   |
+| Commit (git) | কমিট                                                    |

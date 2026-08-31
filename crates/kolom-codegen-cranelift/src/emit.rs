@@ -122,6 +122,8 @@ const FALLIBLE_RT: &[&str] = &[
     "kl_stat_covariance",
     "kl_stat_correlation",
     "kl_stat_linreg",
+    "kl_parse_num",
+    "kl_parse_dec",
 ];
 
 #[derive(Clone)]
@@ -743,6 +745,19 @@ impl Gen {
         }
     }
 
+    /// `সংখ্যায়`/`দশমিকে` — `লেখায়`'s inverse. `want_dec` picks which.
+    fn lower_parse(&mut self, b: &mut FunctionBuilder, args: &[Expr], env: &mut Env, want_dec: bool) -> Result<CVal, String> {
+        if args.len() != 1 {
+            return Err("M2 codegen: সংখ্যায়()/দশমিকে() ঠিক একটি আর্গুমেন্ট নেয়".into());
+        }
+        let t = self.lower_expr_txt(b, &args[0], env)?;
+        if want_dec {
+            Ok(CVal::Dec(self.call_rt(b, "kl_parse_dec", &[t])))
+        } else {
+            Ok(CVal::Num(self.call_rt(b, "kl_parse_num", &[t])))
+        }
+    }
+
     fn lower_share(&mut self, b: &mut FunctionBuilder, args: &[Expr], env: &mut Env) -> Result<CVal, String> {
         if args.len() != 1 {
             return Err("M2 codegen: শেয়ার_করো() ঠিক একটি আর্গুমেন্ট নেয়".into());
@@ -1165,6 +1180,8 @@ impl Gen {
                             "কপি" => return self.lower_copy(b, args, env),
                             "সাজাও" => return self.lower_sort(b, args, env),
                             "লেখায়" => return self.lower_to_text(b, args, env),
+                            "সংখ্যায়" => return self.lower_parse(b, args, env, false),
+                            "দশমিকে" => return self.lower_parse(b, args, env, true),
                             "শেয়ার_করো" => return self.lower_share(b, args, env),
                             "মান" => return self.lower_shared_get(b, args, env),
                             "বসাও" => return self.lower_shared_set(b, args, env),
@@ -2827,6 +2844,8 @@ pub fn emit_for(prog: &Program, target: crate::link::Target) -> Result<Vec<u8>, 
         ("kl_math_fmod", &[f64t, f64t], &[f64t]),
         ("kl_dec_to_text", &[f64t], &[ptr_ty]),
         ("kl_bool_to_text", &[i8t], &[ptr_ty]),
+        ("kl_parse_num", &[ptr_ty], &[i64t]),
+        ("kl_parse_dec", &[ptr_ty], &[f64t]),
         // লেখা
         ("kl_str_concat", &[ptr_ty, ptr_ty], &[ptr_ty]),
         ("kl_str_cplen", &[ptr_ty], &[i64t]),

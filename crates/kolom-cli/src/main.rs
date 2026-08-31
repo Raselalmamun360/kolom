@@ -5,7 +5,7 @@ use kolom_lexer::{bn_num, format_error, lex};
 
 mod editor;
 
-const VERSION: &str = "০.১.০";
+const VERSION: &str = "১.০.০";
 
 const HELP: &str = "কলম — বাংলা প্রোগ্রামিং ভাষা
 

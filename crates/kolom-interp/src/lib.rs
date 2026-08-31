@@ -1578,6 +1578,32 @@ impl<'o> Interp<'o> {
                 other => Ok(Value::Txt(format!("{}", other))),
             };
         }
+        if name == "সংখ্যায়" || name == "দশমিকে" {
+            if args.len() != 1 {
+                return Err(err(
+                    pos,
+                    format!("'{}' ১টি আর্গুমেন্ট নেয়, {}টি পেয়েছে", name, bn_num(args.len() as u32)),
+                ));
+            }
+            let v = self.eval(&args[0])?;
+            let s = match &v {
+                Value::Txt(s) => s,
+                _ => return Err(err(pos, format!("'{}' 'লেখা' নেয়", name))),
+            };
+            let ascii = bengali_digits_to_ascii(s);
+            let trimmed = ascii.trim();
+            return if name == "সংখ্যায়" {
+                trimmed
+                    .parse::<i64>()
+                    .map(Value::Num)
+                    .map_err(|_| err(pos, format!("'{}' সংখ্যা নয়", s)))
+            } else {
+                trimmed
+                    .parse::<f64>()
+                    .map(Value::Dec)
+                    .map_err(|_| err(pos, format!("'{}' দশমিক নয়", s)))
+            };
+        }
         if name == "ম্যাপ_তৈরি" {
             return Ok(Value::Map(Rc::new(RefCell::new(HashMap::new()))));
         }
@@ -2127,6 +2153,19 @@ fn now_civil() -> (i64, u32, u32) {
 fn now_time_of_day() -> (u32, u32, u32) {
     let secs = now_epoch_ms().div_euclid(1000).rem_euclid(86400) as u32;
     (secs / 3600, (secs % 3600) / 60, secs % 60)
+}
+
+/// `সংখ্যায়`/`দশমিকে` — Kolom source itself accepts both Bengali (২৫) and
+/// ASCII (25) numeral literals, so a command-line argument or file content
+/// a Bengali-typing user produced plausibly uses Bengali digits too. Rust's
+/// `str::parse` only understands ASCII, so map ০-৯ to 0-9 first.
+fn bengali_digits_to_ascii(s: &str) -> String {
+    s.chars()
+        .map(|c| match c {
+            '০'..='৯' => char::from(b'0' + (c as u32 - '০' as u32) as u8),
+            other => other,
+        })
+        .collect()
 }
 
 fn values_eq(l: &Value, r: &Value) -> bool {

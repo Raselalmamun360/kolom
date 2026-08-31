@@ -310,6 +310,45 @@ pub extern "C" fn kl_dec_to_text(v: f64) -> *mut u8 {
     str_from_rust(&format!("{}", v))
 }
 
+/// `সংখ্যায়`/`দশমিকে` — Kolom source itself accepts both Bengali (২৫) and
+/// ASCII (25) numeral literals, so a command-line argument or file content
+/// a Bengali-typing user produced plausibly uses Bengali digits too. Rust's
+/// `str::parse` only understands ASCII, so map ০-৯ to 0-9 first.
+fn bengali_digits_to_ascii(s: &str) -> String {
+    s.chars()
+        .map(|c| match c {
+            '০'..='৯' => char::from(b'0' + (c as u32 - '০' as u32) as u8),
+            other => other,
+        })
+        .collect()
+}
+
+/// `লেখায়`-এর বিপরীত — `লেখা` পার্স করে `সংখ্যা`। ব্যর্থ হলে (অসংখ্যাসূচক
+/// ইনপুট) `চেষ্টা`/`ধরো`-catchable রানটাইম ত্রুটি, নীরবে ০ নয়।
+#[no_mangle]
+pub extern "C" fn kl_parse_num(p: *mut u8) -> i64 {
+    let s = String::from_utf8_lossy(unsafe { str_slice(p) }).into_owned();
+    match bengali_digits_to_ascii(s.trim()).parse::<i64>() {
+        Ok(n) => n,
+        Err(_) => {
+            fail(format!("'{}' সংখ্যা নয়", s));
+            0
+        }
+    }
+}
+
+#[no_mangle]
+pub extern "C" fn kl_parse_dec(p: *mut u8) -> f64 {
+    let s = String::from_utf8_lossy(unsafe { str_slice(p) }).into_owned();
+    match bengali_digits_to_ascii(s.trim()).parse::<f64>() {
+        Ok(n) => n,
+        Err(_) => {
+            fail(format!("'{}' দশমিক নয়", s));
+            0.0
+        }
+    }
+}
+
 #[no_mangle]
 pub extern "C" fn kl_bool_to_text(v: i8) -> *mut u8 {
     str_from_rust(if v != 0 { "সত্য" } else { "মিথ্যা" })
