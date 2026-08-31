@@ -525,7 +525,8 @@ app.ক
 
 - প্যারেনথেসিস `()`
 - ব্র্যাকেট `[]`
-- ব্রেস `{}`
+
+ব্রেস `{}` এই তালিকায় নেই — `{}`-এর ভেতরে নিউলাইন স্বাভাবিকভাবেই উৎপন্ন হতে থাকে, কারণ `Block`-এর (§১২.১) ভেতরে সেটিই স্টেটমেন্ট বিভাজক (§১৮.২)।
 
 উদাহরণ
 
@@ -1009,8 +1010,7 @@ NullLiteral = "ফাঁকা" ;
 
 ```ebnf
 Program =
-    { ImportDeclaration }
-    { TopLevelDeclaration }
+    { ImportDeclaration | TopLevelDeclaration }
     [ AppDeclaration ] ;
 
 TopLevelDeclaration =
@@ -1019,7 +1019,7 @@ TopLevelDeclaration =
     | StructDeclaration ;
 ```
 
-একটি সোর্স ফাইলে যেকোনো সংখ্যক ইম্পোর্ট ডিক্লারেশন থাকতে পারে, তারপর যেকোনো সংখ্যক টপ-লেভেল ফাংশন, কনস্ট্যান্ট বা `তথ্য` ডিক্লারেশন থাকতে পারে, যেকোনো ক্রমে।
+একটি সোর্স ফাইলে যেকোনো সংখ্যক ইম্পোর্ট ডিক্লারেশন, টপ-লেভেল ফাংশন, কনস্ট্যান্ট, বা `তথ্য` ডিক্লারেশন থাকতে পারে, স্বাধীনভাবে মিশ্রিত ও যেকোনো ক্রমে — একটি `ইম্পোর্ট` অন্য একটি ফাংশন বা `তথ্য` ডিক্লারেশনের পরে এলেও বৈধ।
 
 `AppDeclaration` ঐচ্ছিক, কারণ কলম-এ দুই ধরনের সোর্স ফাইল থাকে —
 
@@ -1537,7 +1537,7 @@ ArrayLiteral =
 
 ইম্পোর্ট সময়
 
-ইম্পোর্ট json
+ইম্পোর্ট জেসন
 ```
 
 ## ১৪.২ সুযোগ (Scope)
@@ -1623,8 +1623,7 @@ ContainerWidgetKeyword =
 ```ebnf
 (* Program structure — §9 *)
 Program =
-    { ImportDeclaration }
-    { TopLevelDeclaration }
+    { ImportDeclaration | TopLevelDeclaration }
     [ AppDeclaration ] ;
 
 TopLevelDeclaration =
@@ -1862,7 +1861,7 @@ NullLiteral =
 
 # ১৭. AST ম্যাপিং
 
-প্রতিটি গ্রামার রুল সাধারণত ঠিক একটি AST নোড টাইপে ম্যাপ হয়, যা `compiler.md` §৫–§৬-এ বর্ণিত সিমান্টিক অ্যানালাইসিস ধাপে ব্যবহৃত হয় — ব্যতিক্রম শুধু `.` মেম্বার অ্যাক্সেস (§১৩.১.১), যা প্রেক্ষাপট অনুযায়ী দুই ধরনের নোডে ম্যাপ হতে পারে, নিচে দেখুন।
+প্রতিটি গ্রামার রুল আলাদা AST নোড টাইপে ম্যাপ হয় না — `kolom-syntax` ক্রেটের প্রকৃত `ast.rs`-এ একাধিক গ্রামার রুল প্রায়ই একটিমাত্র নোড টাইপে একীভূত (নিচের টেবিল ও তার পরের প্রোজ দেখুন), এবং `.` মেম্বার অ্যাক্সেস (§১৩.১.১) প্রেক্ষাপট অনুযায়ী দুই ভিন্ন প্রতিনিধিত্বে ম্যাপ হয়।
 
 | গ্রামার রুল | AST নোড |
 |--------------|----------|
@@ -1871,36 +1870,34 @@ NullLiteral =
 | `VariableDeclaration` | `VarDecl` |
 | `ConstantDeclaration` | `ConstDecl` |
 | `FunctionDeclaration` | `FuncDecl` |
-| `ImportDeclaration` | `ImportDecl` |
+| `ImportDeclaration` | পৃথক কোনো নোড নেই — মডিউল আইডেন্টিফায়ারটি সরাসরি `Ident` হিসেবে `Program.imports`-এ জমা হয় |
 | `Block` | `Block` |
 | `IfStatement` | `IfStmt` |
 | `LoopStatement` | `LoopStmt` |
 | `WhileStatement` | `WhileStmt` |
 | `ForEachStatement` | `ForEachStmt` |
 | `ReturnStatement` | `ReturnStmt` |
-| `BreakStatement` | `BreakStmt` |
-| `ContinueStatement` | `ContinueStmt` |
+| `BreakStatement` | পৃথক কোনো নোড নেই — `Stmt::Break(Pos)`, শুধু উৎস-অবস্থান বহন করে |
+| `ContinueStatement` | পৃথক কোনো নোড নেই — `Stmt::Continue(Pos)` |
 | `TryCatchStatement` | `TryCatchStmt` |
-| `ExpressionStatement` | `ExprStmt` |
+| `ExpressionStatement` | পৃথক কোনো নোড নেই — `Stmt::Expr(Expr)`, সরাসরি ভেতরের `Expr` বহন করে |
 | `StructDeclaration` | `StructDecl` |
-| `AssignmentExpression` | `AssignExpr` |
-| `LogicalOrExpression` / `LogicalAndExpression` | `LogicalExpr` |
-| `EqualityExpression` / `RelationalExpression` | `BinaryExpr` |
-| `AdditiveExpression` / `MultiplicativeExpression` | `BinaryExpr` |
-| `UnaryExpression` | `UnaryExpr` |
-| `CallExpression` with a `"(" [ ArgumentList ] ")"` suffix | `CallExpr` |
-| `CallExpression` with a `"[" Expression "]"` suffix | `IndexExpr` |
-| `PrimaryExpression`-এর `"." Identifier` লেজ, অথবা `CallSuffix`-এর `"." Identifier` ফর্ম | `Qualified` (মডিউল-আইটেম রেফারেন্স, অথবা — বাম দিকটি একটি লোকাল স্ট্রাক্ট-টাইপড বাইন্ডিং হলে — স্ট্রাক্ট ফিল্ড রিড; §১৩.১.১) |
-| `AssignmentTarget`-এর `"." Identifier` লেজ | `Assign` (স্ট্রাক্ট ফিল্ড রাইট, `LValue`-এর ফিল্ড হিসেবে বহন করা) |
+| `AssignmentExpression` | `Assign` (`LValue` ও ডান পাশের `Expr` বহন করে) |
+| `LogicalOrExpression` / `LogicalAndExpression` / `EqualityExpression` / `RelationalExpression` / `AdditiveExpression` / `MultiplicativeExpression` | `Binary` — একটিমাত্র ভ্যারিয়েন্ট, যা মিলে যাওয়া অপারেটর `BinOp`-এ বহন করে; `এবং`/`অথবা`ও এর ব্যতিক্রম নয়, নিচে দেখুন |
+| `UnaryExpression` | `Unary` |
+| `CallExpression` | `Postfix(base, suffixes)` — কল, ইনডেক্স, ফিল্ড প্রতিটি `Suffix` enum-এর একেকটি ভ্যারিয়েন্ট (`Call`/`Index`/`Field`), পৃথক নোড টাইপ নয়; নিচে দেখুন |
+| `PrimaryExpression`-এর সরাসরি সংলগ্ন `"." Identifier` লেজ | `Qualified` (মডিউল-আইটেম রেফারেন্স, অথবা — বাম দিকটি একটি লোকাল স্ট্রাক্ট-টাইপড বাইন্ডিং হলে — স্ট্রাক্ট ফিল্ড রিড; §১৩.১.১) |
+| `CallSuffix`-এর `"." Identifier` ফর্ম | `Postfix`-এর একটি `Suffix::Field` উপাদান — `Qualified` নয় (§১৩.১.১, §১৮.১) |
+| `AssignmentTarget`-এর `"." Identifier` লেজ | `Assign` (স্ট্রাক্ট ফিল্ড রাইট, `LValue`-এর `field` হিসেবে বহন করা) |
 | `Identifier` (primary expression হিসেবে) | `Ident` |
-| `NumberLiteral` / `StringLiteral` / `CharacterLiteral` / `BooleanLiteral` / `NullLiteral` | `Literal` |
-| `ArrayLiteral` | `ArrayLit` |
-| `DisplayDeclaration` | `DisplayDecl` |
-| `WidgetCall` / `ContainerWidgetCall` | `WidgetCall` |
+| `NumberLiteral` / `StringLiteral` / `CharacterLiteral` / `BooleanLiteral` / `NullLiteral` | `Lit` (`Int`/`Float`/`Str`/`Char`/`Bool`/`Null` ভ্যারিয়েন্ট) |
+| `ArrayLiteral` | `Lit::Array` — পৃথক নোড টাইপ নয়, অন্য সব লিটারেলের মতোই একই `Lit` enum-এর একটি ভ্যারিয়েন্ট |
+| `DisplayDeclaration` | পৃথক কোনো নোড নেই — `Stmt::Display(Block)` |
+| `WidgetCall` / `ContainerWidgetCall` | `WidgetNode` |
 
-প্রায়োরিটি-ক্লাইম্বিং রুলগুলো (`EqualityExpression` থেকে `MultiplicativeExpression` পর্যন্ত) একটিমাত্র `BinaryExpr` নোডে একীভূত হয়, যা মিলে যাওয়া অপারেটর বহন করে — প্রতিটি প্রায়োরিটি লেভেলের জন্য আলাদা নোড টাইপ নয়। গ্রামার পার্স করার জন্য এগুলো আলাদা করে, কিন্তু AST-এর তা প্রয়োজন নেই।
+প্রায়োরিটি-ক্লাইম্বিং রুলগুলো (`LogicalOrExpression` থেকে `MultiplicativeExpression` পর্যন্ত — `এবং`/`অথবা`সহ) একটিমাত্র `Binary` নোডে একীভূত হয়, যা মিলে যাওয়া অপারেটর `BinOp`-এ বহন করে — প্রতিটি প্রায়োরিটি লেভেলের জন্য, এমনকি লজিক্যাল বনাম অ্যারিথমেটিক/তুলনা অপারেটরের জন্যও, আলাদা নোড টাইপ নেই। গ্রামার পার্স করার জন্য এগুলো আলাদা করে, কিন্তু AST-এর তা প্রয়োজন নেই।
 
-একইভাবে, `CallExpression`-এর প্রতিটি `CallSuffix` তার ধরন অনুযায়ী `CallExpr` বা `IndexExpr`-এ রূপান্তরিত হয় — গ্রামারে একটিমাত্র রুল থাকলেও, AST-এ কল ও ইনডেক্স অ্যাক্সেস আলাদা নোড হিসেবে থাকে, যাতে কোড জেনারেশন (`compiler.md` §৭) তাদের ভিন্নভাবে লোয়ার করতে পারে।
+একইভাবে, `CallExpression`-এর গোটা postfix চেইনটি (কল, ইনডেক্স, ফিল্ড — যেকোনো ক্রমে মিশ্রিত) একটিমাত্র `Postfix` নোডে ধরা থাকে, যার `Vec<Suffix>` প্রতিটি ধাপের ধরন ও তথ্য বহন করে — গ্রামারে `CallSuffix`-এর একাধিক বিকল্প থাকলেও, AST-এ প্রতিটি ধাপের জন্য আলাদা নোড টাইপ নেই। ব্যতিক্রম শুধু `PrimaryExpression`-এর সরাসরি সংলগ্ন প্রথম `"." Identifier` লেজ, যা `Postfix`-এর বদলে একটি পৃথক `Qualified` নোড হিসেবে পার্স হয় (§১৮.১)।
 
 ---
 
@@ -1916,7 +1913,7 @@ NullLiteral =
 - **`নাহলে` চেইনিং** (`IfStatement`, §১২.২): একটি অনুগামী `নাহলে`-এর পর `যদি` এলে তা আরেকটি `IfStatement`-এ রিকার্স করে; `নাহলে`-এর পর `{` এলে তা একটি সাধারণ `Block`-এর সাথে মেলে। `নাহলে`-এর পর একটি টোকেন লুকঅ্যাহেডই যথেষ্ট।
 - **কন্টেইনার বনাম লিফ উইজেট** (`WidgetCall` বনাম `ContainerWidgetCall`, §১৫.১): লুকঅ্যাহেড দিয়ে নয়, বরং কোন নির্দিষ্ট `WidgetKeyword` মিলেছে তা দিয়ে নির্ধারিত হয় — `সারি`/`কলাম`/`কার্ড`/`ডায়ালগ`/`স্ক্রল` সবসময় একটি অনুগামী `Block` আশা করে।
 - **অ্যাসাইনমেন্ট বনাম এক্সপ্রেশন স্টেটমেন্ট** (`AssignmentExpression` বনাম `ExpressionStatement`, §১৩.১): `CallSuffix` কল ও ইনডেক্স উভয় ফর্মকে একই পোস্টফিক্স চেইনে অনুমোদন করে বলে, পার্সার প্রথমে সাধারণভাবে পোস্টফিক্স চেইনটি পার্স করে (`Identifier` শুরু করে যত খুশি `CallSuffix`)। এরপর পরবর্তী টোকেন `=` হলে এবং পার্স করা চেইনে শুধু ইনডেক্স সাফিক্স থাকলে (কোনো কল সাফিক্স না থাকলে), এটি `AssignmentExpression` হিসেবে গৃহীত হয়; নইলে এটি `LogicalOrExpression`/`ExpressionStatement`-এ পড়ে যায়। একটি কল সাফিক্সসহ চেইনের পরে `=` এলে (যেমন `যোগ(ক, খ)[০] = ৫`) তা সিনট্যাক্স ত্রুটি, কারণ `AssignmentTarget` শুধুমাত্র বেয়ার `Identifier`, ইনডেক্স ও একটি একক ফিল্ড থেকে উদ্ভূত হয় (§১৩.১)।
-- **মেম্বার অ্যাক্সেস বনাম মডিউল আইটেম** (`"." Identifier`, §১৩.১.১): উভয়ের গ্রামার অভিন্ন। পার্সার সবসময় একটি `Qualified`-আকৃতির নোড তৈরি করে; মডিউল-আইটেম নাকি স্ট্রাক্ট-ফিল্ড তা সিমান্টিক অ্যানালাইসিসে নির্ধারিত হয়, পার্সিং-এ নয়।
+- **মেম্বার অ্যাক্সেস বনাম মডিউল আইটেম** (`"." Identifier`, §১৩.১.১): উভয়ের গ্রামার অভিন্ন, কিন্তু নোড আকৃতি একই নয় — `PrimaryExpression`-এর সরাসরি `"." Identifier` লেজ একটি `Qualified` নোড তৈরি করে, আর `CallSuffix`-এর `"." Identifier` (চেইনে পরবর্তী যেকোনো ধাপ) একটি `Postfix` নোডে একটি ফিল্ড-সাফিক্স যোগ করে (§১৭)। মডিউল-আইটেম নাকি স্ট্রাক্ট-ফিল্ড তা উভয় ক্ষেত্রেই সিমান্টিক অ্যানালাইসিসে নির্ধারিত হয়, পার্সিং-এ নয়।
 
 ## ১৮.২ নিউলাইন হ্যান্ডলিং
 
