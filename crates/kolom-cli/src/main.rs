@@ -18,6 +18,12 @@ const HELP: &str = "কলম — বাংলা প্রোগ্রামি
   kolom new <name>       একই কাজ (ইংরেজি)
   kolom পাতা <ফাইল.ক>    বিল্ট-ইন এডিটর (লাইভ ত্রুটি + Ctrl+R চালাও)
   kolom edit <file.k>    একই কাজ (ইংরেজি)
+  kolom যোগ <নাম> <git-url> --রেফ <tag>   নির্ভরতা যোগ করো (কলম.toml-এ)
+  kolom add <name> <git-url> --ref <tag>  একই কাজ (ইংরেজি)
+  kolom ইনস্টল            সব নির্ভরতা ফেচ করো (কলম.lock লেখে)
+  kolom install           একই কাজ (ইংরেজি)
+  kolom মুছো <নাম>         নির্ভরতা সরাও
+  kolom remove <name>     একই কাজ (ইংরেজি)
   kolom টার্গেট           টার্গেট প্ল্যাটফর্ম তালিকা
   kolom lex <ফাইল.ক>     টোকেন ডিবাগ আউটপুট
   kolom সংস্করণ           সংস্করণ দেখাও
@@ -34,6 +40,9 @@ fn main() -> ExitCode {
         }
         Some("new") | Some("নতুন") => cmd_new(args.get(1)),
         Some("edit") | Some("পাতা") => cmd_edit(args.get(1)),
+        Some("add") | Some("যোগ") => cmd_add(&args[1..]),
+        Some("install") | Some("ইনস্টল") => cmd_install(),
+        Some("remove") | Some("মুছো") => cmd_remove(args.get(1)),
         Some("target") | Some("টার্গেট") => cmd_target(),
         Some("lex") => cmd_lex(args.get(1)),
         Some("version") | Some("--version") | Some("-V") | Some("সংস্করণ") => {
@@ -257,13 +266,127 @@ fn cmd_new(name: Option<&String>) -> ExitCode {
         return ExitCode::FAILURE;
     }
 
+    if let Err(e) = kolom_pkg::Manifest::new(&project_name).save(dir) {
+        eprintln!("ত্রুটি: কলম.toml লেখা যায়নি: {}", e);
+        return ExitCode::FAILURE;
+    }
+
     println!("প্রকল্প '{}' তৈরি হয়েছে", project_name);
     println!("  {}/main.ক", project_name);
+    println!("  {}/{}", project_name, kolom_pkg::MANIFEST_FILE);
     println!();
     println!("চালাতে:");
     println!("  kolom চালাও {}/main.ক", project_name);
     println!("বিল্ড করতে:");
     println!("  kolom বিল্ড {}/main.ক", project_name);
+    ExitCode::SUCCESS
+}
+
+fn cmd_add(rest: &[String]) -> ExitCode {
+    let mut reference: Option<String> = None;
+    let mut positional: Vec<&String> = Vec::new();
+    let mut i = 0;
+    while i < rest.len() {
+        let a = &rest[i];
+        if a == "--রেফ" || a == "--ref" {
+            reference = rest.get(i + 1).cloned();
+            i += 2;
+            continue;
+        }
+        positional.push(a);
+        i += 1;
+    }
+    let (name, url) = match (positional.first(), positional.get(1)) {
+        (Some(n), Some(u)) => (n.to_string(), u.to_string()),
+        _ => {
+            eprintln!("ব্যবহার: kolom যোগ <নাম> <git-url> --রেফ <tag>");
+            return ExitCode::FAILURE;
+        }
+    };
+    let Some(reference) = reference else {
+        eprintln!("ত্রুটি: --রেফ <tag> দিতে হবে (যেমন: --রেফ v1.0.0)");
+        return ExitCode::FAILURE;
+    };
+
+    let cwd = std::env::current_dir().unwrap_or_else(|_| std::path::PathBuf::from("."));
+    let mut manifest = kolom_pkg::Manifest::load(&cwd).unwrap_or_else(|_| {
+        let project_name = cwd
+            .file_name()
+            .map(|n| n.to_string_lossy().into_owned())
+            .unwrap_or_else(|| "প্রকল্প".to_string());
+        kolom_pkg::Manifest::new(&project_name)
+    });
+    manifest.dependencies.insert(
+        name.clone(),
+        kolom_pkg::Dependency { git: url.clone(), reference: reference.clone() },
+    );
+    if let Err(e) = manifest.save(&cwd) {
+        eprintln!("ত্রুটি: {}", e);
+        return ExitCode::FAILURE;
+    }
+    println!("'{}' যোগ হয়েছে ({} @ {})", name, url, reference);
+    println!("ইনস্টল করতে: kolom ইনস্টল");
+    ExitCode::SUCCESS
+}
+
+fn cmd_install() -> ExitCode {
+    let cwd = std::env::current_dir().unwrap_or_else(|_| std::path::PathBuf::from("."));
+    if kolom_pkg::Manifest::load(&cwd).is_err() {
+        eprintln!("ত্রুটি: এই ফোল্ডারে কোনো {} নেই", kolom_pkg::MANIFEST_FILE);
+        return ExitCode::FAILURE;
+    }
+    let existing_lock = kolom_pkg::Lockfile::load(&cwd).unwrap_or_default();
+    match kolom_pkg::install(&cwd, &existing_lock) {
+        Ok(lock) => {
+            let count = lock.packages.len();
+            if let Err(e) = lock.save(&cwd) {
+                eprintln!("ত্রুটি: {}", e);
+                return ExitCode::FAILURE;
+            }
+            println!("{}টি প্যাকেজ ইনস্টল হয়েছে", bn_num(count as u32));
+            for p in &lock.packages {
+                let short = &p.commit[..p.commit.len().min(12)];
+                println!("  {} ({})", p.name, short);
+            }
+            ExitCode::SUCCESS
+        }
+        Err(e) => {
+            eprintln!("ত্রুটি: {}", e);
+            ExitCode::FAILURE
+        }
+    }
+}
+
+fn cmd_remove(name: Option<&String>) -> ExitCode {
+    let name = match name {
+        Some(n) => n,
+        None => {
+            eprintln!("ব্যবহার: kolom মুছো <নাম>");
+            return ExitCode::FAILURE;
+        }
+    };
+    let cwd = std::env::current_dir().unwrap_or_else(|_| std::path::PathBuf::from("."));
+    let mut manifest = match kolom_pkg::Manifest::load(&cwd) {
+        Ok(m) => m,
+        Err(e) => {
+            eprintln!("ত্রুটি: {}", e);
+            return ExitCode::FAILURE;
+        }
+    };
+    if manifest.dependencies.remove(name).is_none() {
+        eprintln!("ত্রুটি: '{}' নির্ভরতা তালিকায় নেই", name);
+        return ExitCode::FAILURE;
+    }
+    if let Err(e) = manifest.save(&cwd) {
+        eprintln!("ত্রুটি: {}", e);
+        return ExitCode::FAILURE;
+    }
+    let pkg_dir = kolom_pkg::packages_dir(&cwd).join(name);
+    if pkg_dir.exists() {
+        let _ = std::fs::remove_dir_all(&pkg_dir);
+    }
+    println!("'{}' সরানো হয়েছে", name);
+    println!("লক ফাইল হালনাগাদ করতে: kolom ইনস্টল");
     ExitCode::SUCCESS
 }
 

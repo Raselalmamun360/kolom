@@ -7,6 +7,7 @@ members = [
     "crates/kolom-runtime",
     "crates/kolom-codegen-cranelift",
     "crates/kolom-interp",
+    "crates/kolom-pkg",
     "crates/kolom-cli",
     "crates/kolom-lsp",
 ]

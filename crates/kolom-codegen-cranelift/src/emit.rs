@@ -1380,6 +1380,17 @@ impl Gen {
     }
 
     fn lower_stdlib_call(&mut self, b: &mut FunctionBuilder, module: &str, item: &str, args: &[Expr], env: &mut Env) -> Result<CVal, String> {
+        // Not necessarily stdlib — a package's functions were merged into
+        // `self.funcs` under a mangled `"প্যাকেজ::ফাংশন"` key (see
+        // `resolve_user_modules`), and every `Qualified{module,name}` call
+        // reaches here unconditionally (unlike sema/interp, this backend has
+        // no separate `"::"`-split dispatcher). Package calls compile like
+        // any other user function — `lower_call` already does exactly that
+        // given the mangled name, no new codegen needed.
+        let mangled = format!("{module}::{item}");
+        if self.funcs.contains_key(&mangled) {
+            return self.lower_call(b, &mangled, args, env);
+        }
         macro_rules! num1 {
             ($rt:expr) => {{
                 let a = self.lower_expr_num(b, &args[0], env)?;

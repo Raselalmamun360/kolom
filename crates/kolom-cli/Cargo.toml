@@ -14,4 +14,5 @@ kolom-syntax = { path = "../kolom-syntax" }
 kolom-sema = { path = "../kolom-sema" }
 kolom-interp = { path = "../kolom-interp" }
 kolom-codegen-cranelift = { version = "0.1.0", path = "../kolom-codegen-cranelift" }
+kolom-pkg = { path = "../kolom-pkg" }
 crossterm = "0.28"

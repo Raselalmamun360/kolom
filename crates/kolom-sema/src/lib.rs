@@ -1305,7 +1305,19 @@ impl Ck {
                         if self.local_struct_field(&module.name, &name.name).is_some() {
                             None
                         } else {
-                            if !self.imports.contains(&module.name) {
+                            // `self.imports` only ever tracks *stdlib*
+                            // modules (see `check_program`) — a package
+                            // import lands in `user_imports` alongside plain
+                            // sibling files, with no set distinguishing the
+                            // two here. Infer "this is a real package" the
+                            // same way `call_stdlib`'s fallback does: it has
+                            // *some* mangled `"module::_"` function merged
+                            // in. Skip the "unknown module" warning for that
+                            // case — `call_stdlib` will resolve (or report a
+                            // precise per-item error for) the call itself.
+                            let prefix = format!("{}::", module.name);
+                            let is_package = self.funcs.keys().any(|k| k.starts_with(&prefix));
+                            if !self.imports.contains(&module.name) && !is_package {
                                 let msg = self.unknown_module_msg(&module.name);
                                 self.err(module.pos, msg);
                             }
@@ -1761,47 +1773,57 @@ impl Ck {
                 }
                 Ty::Txt
             }
-            _ => {
-                let sig = match self.funcs.get(name) {
-                    Some(s) => s.clone(),
-                    None => {
-                        self.err(pos, format!("অজানা ফাংশন '{}'", name));
-                        return Ty::Err;
-                    }
-                };
-                if sig.params.len() != args.len() {
-                    self.err(
-                        pos,
-                        format!(
-                            "'{}' {}টি প্যারামিটার নেয়, {}টি পেয়েছে",
-                            name,
-                            bn_num(sig.params.len() as u32),
-                            bn_num(args.len() as u32)
-                        ),
-                    );
-                    for a in args {
-                        let _ = self.expr(a);
-                    }
-                    return sig.ret;
-                }
-                for (i, (pt, a)) in sig.params.iter().zip(args.iter()).enumerate() {
-                    let at = self.expr(a).unwrap_or(Ty::Unknown);
-                    if !unify(pt, &at) {
-                        self.err(
-                            a.pos,
-                            format!(
-                                "'{}'-এর আর্গুমেন্ট #{} টাইপ অমিল — '{}' প্রত্যাশিত, '{}' পাওয়া গেছে",
-                                name,
-                                bn_num((i + 1) as u32),
-                                pt,
-                                at
-                            ),
-                        );
-                    }
-                }
-                sig.ret
+            _ => self.call_named_fn(name, pos, args),
+        }
+    }
+
+    /// Signature-checks a call against `self.funcs` by its exact key —
+    /// shared by ordinary bare calls (`যোগ(a, b)`, key `"যোগ"`) and package
+    /// calls (`প্যাকেজ.ফাংশন(...)`, key `"প্যাকেজ::ফাংশন"` — package
+    /// functions are genuine Kolom code merged in under that mangled key by
+    /// `resolve_user_modules`, so they get *this* signature table, not
+    /// `stdlib_lookup`'s hand-written one). Split out of `call`'s catch-all
+    /// arm so `call_stdlib` can reach it directly without re-entering `call`
+    /// and re-triggering its `"::"` split.
+    fn call_named_fn(&mut self, name: &str, pos: Pos, args: &[Expr]) -> Ty {
+        let sig = match self.funcs.get(name) {
+            Some(s) => s.clone(),
+            None => {
+                self.err(pos, format!("অজানা ফাংশন '{}'", name));
+                return Ty::Err;
+            }
+        };
+        if sig.params.len() != args.len() {
+            self.err(
+                pos,
+                format!(
+                    "'{}' {}টি প্যারামিটার নেয়, {}টি পেয়েছে",
+                    name,
+                    bn_num(sig.params.len() as u32),
+                    bn_num(args.len() as u32)
+                ),
+            );
+            for a in args {
+                let _ = self.expr(a);
+            }
+            return sig.ret;
+        }
+        for (i, (pt, a)) in sig.params.iter().zip(args.iter()).enumerate() {
+            let at = self.expr(a).unwrap_or(Ty::Unknown);
+            if !unify(pt, &at) {
+                self.err(
+                    a.pos,
+                    format!(
+                        "'{}'-এর আর্গুমেন্ট #{} টাইপ অমিল — '{}' প্রত্যাশিত, '{}' পাওয়া গেছে",
+                        name,
+                        bn_num((i + 1) as u32),
+                        pt,
+                        at
+                    ),
+                );
             }
         }
+        sig.ret
     }
 
     /// `পরম_মান`, `সর্বনিম্ন` and `সর্বোচ্চ` accept either `সংখ্যা` or
@@ -1861,6 +1883,25 @@ impl Ck {
 
     fn call_stdlib(&mut self, module: &str, item: &str, pos: Pos, args: &[Expr]) -> Ty {
         if !self.imports.contains(module) {
+            // Not a stdlib module — a package's functions were merged into
+            // `self.funcs` under a mangled `"প্যাকেজ::ফাংশন"` key (see
+            // `resolve_user_modules`), so a package call reaches here (via
+            // `call`'s `"::"` split) looking exactly like a stdlib one. Try
+            // that table before giving up as an unknown module.
+            let mangled = format!("{module}::{item}");
+            if self.funcs.contains_key(&mangled) {
+                return self.call_named_fn(&mangled, pos, args);
+            }
+            // The module is a real, imported package (has *some* mangled
+            // function), just not this item — a much clearer error than the
+            // generic "this is your own module, drop the dot" message below,
+            // which would be actively wrong advice for a package (packages
+            // are meant to be used with the dot).
+            let prefix = format!("{module}::");
+            if self.funcs.keys().any(|k| k.starts_with(&prefix)) {
+                self.err(pos, format!("প্যাকেজ '{}'-এ '{}' নেই", module, item));
+                return Ty::Err;
+            }
             let msg = self.unknown_module_msg(module);
             self.err(pos, msg);
             return Ty::Err;

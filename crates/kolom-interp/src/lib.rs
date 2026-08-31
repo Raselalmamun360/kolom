@@ -800,6 +800,17 @@ impl<'o> Interp<'o> {
             }
             return Err(err(pos, "'টিক'-এর দ্বিতীয় আর্গুমেন্ট হ্যান্ডলার ফাংশনের নাম"));
         }
+        // Not necessarily stdlib — a package's functions were merged into
+        // `self.funcs` under a mangled `"প্যাকেজ::ফাংশন"` key (see
+        // `resolve_user_modules`), and a package call reaches here via
+        // `call`'s `"::"` split looking exactly like a stdlib one. Checked
+        // before evaluating `args` below: `call_named_fn` evaluates them
+        // itself while binding parameters, so evaluating twice here would
+        // double any side effects in argument expressions.
+        let mangled = format!("{module}::{item}");
+        if self.funcs.contains_key(&mangled) {
+            return self.call_named_fn(&mangled, pos, args);
+        }
         let mut vals: Vec<Value> = Vec::with_capacity(args.len());
         for a in args {
             vals.push(self.eval(a)?);
@@ -1629,6 +1640,17 @@ impl<'o> Interp<'o> {
                 _ => Err(err(pos, "'মুছো_কী' ম্যাপ ও key নেয়")),
             };
         }
+        self.call_named_fn(name, pos, args)
+    }
+
+    /// Runs a call against `self.funcs` by its exact key — shared by
+    /// ordinary bare calls (`যোগ(a, b)`, key `"যোগ"`) and package calls
+    /// (`প্যাকেজ.ফাংশন(...)`, key `"প্যাকেজ::ফাংশন"` — package functions are
+    /// genuine Kolom code merged in under that mangled key by
+    /// `resolve_user_modules`). Split out so `call_stdlib` can reach it
+    /// directly without re-entering `call` and re-triggering its `"::"`
+    /// split (which would just call `call_stdlib` again — infinite loop).
+    fn call_named_fn(&mut self, name: &str, pos: Pos, args: &[Expr]) -> Result<Value, InterpError> {
         let f = match self.funcs.get(name) {
             Some(f) => Rc::clone(f),
             None => return Err(err(pos, format!("অজানা ফাংশন '{}'", name))),
