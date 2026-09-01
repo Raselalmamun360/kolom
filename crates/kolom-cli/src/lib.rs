@@ -139,6 +139,23 @@ pub fn resolve_user_modules(
             }
             prog.structs.push(sd);
         }
+        // `এনাম` — same reasoning and same flat-even-in-a-package-namespace
+        // treatment as `তথ্য` just above.
+        for ed in sub_prog.enums.drain(..) {
+            if let Some(existing) = prog.enums.iter().find(|e| e.name.name == ed.name.name) {
+                return Err(format!(
+                    "'{}' এনাম দুইবার ঘোষিত — একবার মডিউল '{}'-এ, আরেকবার {}:{}-এ",
+                    ed.name.name, mod_name, existing.name.pos.line, existing.name.pos.col
+                ));
+            }
+            prog.enums.push(ed);
+        }
+        // `এক্সটার্ন` blocks — flat-merged like ordinary ফাংশন (their
+        // functions land in the same shared-namespace signature table sema
+        // builds); relies on sema's own "নামে আগেই একটি ফাংশন ঘোষিত" check
+        // for duplicates rather than pre-checking here, same as the ফাংশন/
+        // ধ্রুবক `.extend()` calls below.
+        prog.externs.extend(sub_prog.externs.drain(..));
         match &effective_namespace {
             None => {
                 prog.funcs.extend(sub_prog.funcs.drain(..));

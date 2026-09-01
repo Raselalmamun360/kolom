@@ -28,6 +28,7 @@ const HELP: &str = "কলম — বাংলা প্রোগ্রামি
   kolom remove <name>     একই কাজ (ইংরেজি)
   kolom টার্গেট           টার্গেট প্ল্যাটফর্ম তালিকা
   kolom lex <ফাইল.ক>     টোকেন ডিবাগ আউটপুট
+  kolom ast <ফাইল.ক>     পার্স করা AST ডাম্প (ডিফারেনশিয়াল-টেস্টের জন্য)
   kolom সংস্করণ           সংস্করণ দেখাও
   kolom সাহায্য          এই সাহায্য
 ";
@@ -48,6 +49,7 @@ fn main() -> ExitCode {
         Some("remove") | Some("মুছো") => cmd_remove(args.get(1)),
         Some("target") | Some("টার্গেট") => cmd_target(),
         Some("lex") => cmd_lex(args.get(1)),
+        Some("ast") => cmd_ast(args.get(1)),
         Some("version") | Some("--version") | Some("-V") | Some("সংস্করণ") => {
             println!("কলম {}", VERSION);
             ExitCode::SUCCESS
@@ -467,4 +469,27 @@ fn cmd_lex(path: Option<&String>) -> ExitCode {
     } else {
         ExitCode::FAILURE
     }
+}
+
+/// Dumps the parsed AST via `{:#?}` (every AST node already derives
+/// `Debug`) — deterministic, complete, and diffable, which is exactly what
+/// a self-hosted parser needs to be checked against byte-for-byte. See
+/// `docs/v2-prerequisites.md` §৭ and `scripts/diff-dump.ps1`.
+fn cmd_ast(path: Option<&String>) -> ExitCode {
+    let (src, file) = match read_source(path) {
+        Ok(x) => x,
+        Err(c) => return c,
+    };
+    let (tokens, lex_errs) = lex(&src);
+    if !lex_errs.is_empty() {
+        print_diags("ত্রুটি", &file, &lex_errs);
+        return ExitCode::FAILURE;
+    }
+    let (prog, parse_errs) = kolom_syntax::parse(tokens);
+    if !parse_errs.is_empty() {
+        print_diags("ত্রুটি", &file, &parse_errs);
+        return ExitCode::FAILURE;
+    }
+    println!("{:#?}", prog);
+    ExitCode::SUCCESS
 }

@@ -202,6 +202,15 @@ fn build_extern_ffi_links_and_calls_real_symbol() {
     assert_eq!(norm(&got), "120\n5040\n", "kl_math_factorial via এক্সটার্ন did not link/call correctly");
 }
 
+// `55_module_stress` (docs/v2-prerequisites.md §৮) deliberately mixes
+// এনাম/মিলাও, জেনারিক্স, and first-class function values with এক্সটার্ন —
+// and only এক্সটার্ন is native-codegen-ready today (see §১/§৩/§৪'s "নেটিভ
+// কোডজেন বাকি" notes), so this fixture is interpreted-only for now; its
+// native-build coverage is `54_extern_ffi` above, isolating the one piece
+// that *is* codegen-ready. A native build of the full mixed fixture will
+// become meaningful once the others land — see `emit()`'s graceful
+// "অজানা struct 'T'"/similar errors for what's still missing.
+
 /// Sanity check on the test's own premise: if a C compiler were still
 /// reachable through the scrubbed PATH, the tests above would prove nothing.
 #[test]

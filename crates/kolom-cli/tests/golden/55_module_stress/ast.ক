@@ -1,0 +1,8 @@
+এনাম Expr {
+    Num(সংখ্যা),
+    Add(শেয়ার Expr, শেয়ার Expr),
+    Sub(শেয়ার Expr, শেয়ার Expr),
+    Mul(শেয়ার Expr, শেয়ার Expr),
+    Div(শেয়ার Expr, শেয়ার Expr),
+    Neg(শেয়ার Expr)
+}
