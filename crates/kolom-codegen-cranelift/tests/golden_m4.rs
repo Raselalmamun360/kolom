@@ -94,3 +94,45 @@ fn ui_graphics_canvas_tick() {
     let out = run_with("ui_graphics", src, &[("KLOM_UI_AUTOCLOSE_MS", "900")], None);
     assert!(out.contains("টিক"), "expected tick handler output, got: {out:?}");
 }
+
+/// গ্রাফিক্স keyboard/mouse polling (কী_চাপা_হলো/মাউস_ক্লিক_হলো/মাউস_x/y).
+/// `KLOM_UI_SCRIPT_INPUT` drives real `WM_KEYDOWN`/`WM_KEYUP`/`WM_MOUSEMOVE`/
+/// `WM_LBUTTONDOWN`/`WM_LBUTTONUP` through the live message loop (see
+/// `Ui::input_script` in kolom-runtime/src/ui.rs), so a print from the টিক
+/// handler proves the messages actually reached `wndproc` and updated the
+/// polled state — not just that the accessor functions exist.
+#[test]
+fn ui_graphics_keyboard_mouse_input() {
+    let src = r#"
+ইম্পোর্ট গ্রাফিক্স
+
+ফাংশন প্রতি_টিক() -> ফাঁকা {
+    যদি (গ্রাফিক্স.কী_চাপা_হলো(গ্রাফিক্স.উপরের_তীর)) {
+        লেখো("উপরে চাপা হয়েছে")
+    }
+    যদি (গ্রাফিক্স.কী_চাপা_হলো(গ্রাফিক্স.স্পেস)) {
+        লেখো("স্পেস চাপা হয়েছে")
+    }
+    যদি (গ্রাফিক্স.মাউস_ক্লিক_হলো(০)) {
+        লেখো("ক্লিক: " + লেখায়(গ্রাফিক্স.মাউস_x()) + "," + লেখায়(গ্রাফিক্স.মাউস_y()))
+    }
+}
+
+অ্যাপ {
+    ডিসপ্লে {
+        ক্যানভাস(200, 120)
+    }
+    গ্রাফিক্স.টিক(৫০, প্রতি_টিক)
+}
+"#;
+    let out = run_with(
+        "ui_input",
+        src,
+        &[
+            ("KLOM_UI_AUTOCLOSE_MS", "1500"),
+            ("KLOM_UI_SCRIPT_INPUT", "কী:38;কী:32;মাউস:70,90,0"),
+        ],
+        None,
+    );
+    assert_eq!(out, "উপরে চাপা হয়েছে\nস্পেস চাপা হয়েছে\nক্লিক: 70,90\n");
+}

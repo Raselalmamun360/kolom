@@ -156,7 +156,7 @@ pub fn run_with_io(
         scopes: vec![Scope::new()],
         out,
         input,
-        rng: 0x2545F4914F6CDD1D ^ seed_ms,
+        rng: 0x9E3779B97F4A7C15 ^ seed_ms,
         net: HashMap::new(),
         net_next: 1,
         structs: HashMap::new(),
@@ -450,6 +450,23 @@ impl<'o> Interp<'o> {
                 match (module.name.as_str(), name.name.as_str()) {
                     ("গণিত", "পাই") => Ok(Value::Dec(std::f64::consts::PI)),
                     ("গণিত", "ই") => Ok(Value::Dec(std::f64::consts::E)),
+                    // Win32 ভার্চুয়াল-কী কোড — `kolom_runtime::ui`-এর
+                    // `wndproc`-এর সাথে মিলিয়ে রাখা আছে। ইন্টারপ্রেটেড মোডে
+                    // এদের আসলে কোনো উইন্ডো/ইনপুট নেই (`গ্রাফিক্স` পুরোপুরি
+                    // no-op, নিচে দেখুন), কিন্তু মানগুলো এখনও অর্থপূর্ণ থাকা
+                    // দরকার যাতে `যদি (কী == গ্রাফিক্স.স্পেস)`-এর মতো তুলনা
+                    // অন্তত টাইপ-চেক পাশ করা প্রোগ্রামে ভেঙে না পড়ে।
+                    ("গ্রাফিক্স", "উপরের_তীর") => Ok(Value::Num(0x26)),
+                    ("গ্রাফিক্স", "নিচের_তীর") => Ok(Value::Num(0x28)),
+                    ("গ্রাফিক্স", "বামের_তীর") => Ok(Value::Num(0x25)),
+                    ("গ্রাফিক্স", "ডানের_তীর") => Ok(Value::Num(0x27)),
+                    ("গ্রাফিক্স", "স্পেস") => Ok(Value::Num(0x20)),
+                    ("গ্রাফিক্স", "এন্টার") => Ok(Value::Num(0x0D)),
+                    ("গ্রাফিক্স", "এস্কেপ") => Ok(Value::Num(0x1B)),
+                    ("গ্রাফিক্স", "শিফট") => Ok(Value::Num(0x10)),
+                    ("গ্রাফিক্স", "কন্ট্রোল") => Ok(Value::Num(0x11)),
+                    ("গ্রাফিক্স", "ট্যাব") => Ok(Value::Num(0x09)),
+                    ("গ্রাফিক্স", "ব্যাকস্পেস") => Ok(Value::Num(0x08)),
                     _ => Err(err(
                         name.pos,
                         format!(
@@ -801,12 +818,17 @@ impl<'o> Interp<'o> {
         Ok(())
     }
 
+    /// xorshift64 — matches `kolom-runtime`'s `xorshift_next` exactly (same
+    /// algorithm, same zero-state guard), so a `বীজ`-seeded sequence is
+    /// identical whether the program runs interpreted or compiled.
     fn rng_next(&mut self) -> u64 {
-        self.rng = self
-            .rng
-            .wrapping_mul(6364136223846793005)
-            .wrapping_add(1442695040888963407);
-        self.rng >> 33
+        if self.rng == 0 {
+            self.rng = 0x9E3779B97F4A7C15;
+        }
+        self.rng ^= self.rng << 13;
+        self.rng ^= self.rng >> 7;
+        self.rng ^= self.rng << 17;
+        self.rng
     }
 
     fn next_net_handle(&mut self) -> i64 {
@@ -869,14 +891,92 @@ impl<'o> Interp<'o> {
                 }
             }
             ("গণিত", "ঘাত", [a, b]) => Ok(Value::Dec(num_f(a)?.powf(num_f(b)?))),
+            ("গণিত", "ঘনমূল", [v]) => Ok(Value::Dec(num_f(v)?.cbrt())),
+            ("গণিত", "এক্সপ", [v]) => Ok(Value::Dec(num_f(v)?.exp())),
             ("গণিত", "ফ্লোর", [v]) => Ok(Value::Num(num_f(v)?.floor() as i64)),
             ("গণিত", "সিলিং", [v]) => Ok(Value::Num(num_f(v)?.ceil() as i64)),
             ("গণিত", "রাউন্ডঅফ", [v]) => Ok(Value::Num(num_f(v)?.round() as i64)),
+            ("গণিত", "ট্রাংক", [v]) => Ok(Value::Num(num_f(v)?.trunc() as i64)),
+            ("গণিত", "দশমিক_রাউন্ড", [x, Value::Num(digits)]) => {
+                let factor = 10f64.powi(*digits as i32);
+                Ok(Value::Dec((num_f(x)? * factor).round() / factor))
+            }
             ("গণিত", "সাইন", [v]) => Ok(Value::Dec(num_f(v)?.sin())),
             ("গণিত", "কোসাইন", [v]) => Ok(Value::Dec(num_f(v)?.cos())),
             ("গণিত", "ট্যান", [v]) => Ok(Value::Dec(num_f(v)?.tan())),
-            ("গণিত", "লগ", [v]) => Ok(Value::Dec(num_f(v)?.log10())),
-            ("গণিত", "লন", [v]) => Ok(Value::Dec(num_f(v)?.ln())),
+            ("গণিত", "হাইপারবোলিক_সাইন", [v]) => Ok(Value::Dec(num_f(v)?.sinh())),
+            ("গণিত", "হাইপারবোলিক_কোসাইন", [v]) => Ok(Value::Dec(num_f(v)?.cosh())),
+            ("গণিত", "হাইপারবোলিক_ট্যান", [v]) => Ok(Value::Dec(num_f(v)?.tanh())),
+            ("গণিত", "আর্কসাইন", [v]) => {
+                let x = num_f(v)?;
+                if !(-1.0..=1.0).contains(&x) {
+                    Err(err(pos, "আর্কসাইনের ইনপুট -১ থেকে ১-এর মধ্যে হতে হবে"))
+                } else {
+                    Ok(Value::Dec(x.asin()))
+                }
+            }
+            ("গণিত", "আর্কোকোসাইন", [v]) => {
+                let x = num_f(v)?;
+                if !(-1.0..=1.0).contains(&x) {
+                    Err(err(pos, "আর্কোকোসাইনের ইনপুট -১ থেকে ১-এর মধ্যে হতে হবে"))
+                } else {
+                    Ok(Value::Dec(x.acos()))
+                }
+            }
+            ("গণিত", "আর্কট্যান", [v]) => Ok(Value::Dec(num_f(v)?.atan())),
+            ("গণিত", "আর্কট্যান২", [y, x]) => Ok(Value::Dec(num_f(y)?.atan2(num_f(x)?))),
+            ("গণিত", "হাইপো", [a, b]) => Ok(Value::Dec(num_f(a)?.hypot(num_f(b)?))),
+            ("গণিত", "রেডিয়ানে", [v]) => Ok(Value::Dec(num_f(v)? * std::f64::consts::PI / 180.0)),
+            ("গণিত", "ডিগ্রিতে", [v]) => Ok(Value::Dec(num_f(v)? * 180.0 / std::f64::consts::PI)),
+            ("গণিত", "রৈখিক_ইন্টারপোলেশন", [a, b, t]) => {
+                let (a, b, t) = (num_f(a)?, num_f(b)?, num_f(t)?);
+                Ok(Value::Dec(a + (b - a) * t))
+            }
+            ("গণিত", "লগ", [v]) => {
+                let x = num_f(v)?;
+                if x <= 0.0 {
+                    Err(err(pos, "লগের ইনপুট ধনাত্মক হতে হবে"))
+                } else {
+                    Ok(Value::Dec(x.log10()))
+                }
+            }
+            ("গণিত", "লন", [v]) => {
+                let x = num_f(v)?;
+                if x <= 0.0 {
+                    Err(err(pos, "লনের ইনপুট ধনাত্মক হতে হবে"))
+                } else {
+                    Ok(Value::Dec(x.ln()))
+                }
+            }
+            ("গণিত", "লগবেস", [x, base]) => {
+                let (x, base) = (num_f(x)?, num_f(base)?);
+                if x <= 0.0 {
+                    Err(err(pos, "লগবেসের x ধনাত্মক হতে হবে"))
+                } else if base <= 0.0 || base == 1.0 {
+                    Err(err(pos, "লগবেসের ভিত্তি ধনাত্মক এবং ১ ছাড়া অন্য কিছু হতে হবে"))
+                } else {
+                    Ok(Value::Dec(x.ln() / base.ln()))
+                }
+            }
+            ("গণিত", "গসাগু", [Value::Num(a), Value::Num(b)]) => Ok(Value::Num(gcd_i64(*a, *b))),
+            ("গণিত", "লসাগু", [Value::Num(a), Value::Num(b)]) => Ok(Value::Num(lcm_i64(*a, *b))),
+            ("গণিত", "ফ্যাক্টোরিয়াল", [Value::Num(n)]) => {
+                factorial_i64(*n).map(Value::Num).map_err(|m| err(pos, m))
+            }
+            ("গণিত", "সমাবেশ", [Value::Num(n), Value::Num(r)]) => {
+                ncr_i64(*n, *r).map(Value::Num).map_err(|m| err(pos, m))
+            }
+            ("গণিত", "বিন্যাস", [Value::Num(n), Value::Num(r)]) => {
+                npr_i64(*n, *r).map(Value::Num).map_err(|m| err(pos, m))
+            }
+            ("গণিত", "চিহ্ন", [Value::Num(x)]) => Ok(Value::Num(x.signum())),
+            ("গণিত", "চিহ্ন", [Value::Dec(x)]) => Ok(Value::Dec(if *x > 0.0 {
+                1.0
+            } else if *x < 0.0 {
+                -1.0
+            } else {
+                0.0
+            })),
             ("গণিত", "সর্বনিম্ন", [Value::Num(a), Value::Num(b)]) => {
                 Ok(Value::Num(*a.min(b)))
             }
@@ -890,6 +990,13 @@ impl<'o> Interp<'o> {
             ("গণিত", "সর্বোচ্চ", [a, b]) => {
                 let (x, y) = (num_f(a)?, num_f(b)?);
                 Ok(Value::Dec(x.max(y)))
+            }
+            ("গণিত", "সীমাবদ্ধ", [Value::Num(x), Value::Num(lo), Value::Num(hi)]) => {
+                Ok(Value::Num((*x).max(*lo).min(*hi)))
+            }
+            ("গণিত", "সীমাবদ্ধ", [x, lo, hi]) => {
+                let (x, lo, hi) = (num_f(x)?, num_f(lo)?, num_f(hi)?);
+                Ok(Value::Dec(x.max(lo).min(hi)))
             }
 
             // লেখা
@@ -952,6 +1059,16 @@ impl<'o> Interp<'o> {
             ("লেখা", "শেষে_আছে", [Value::Txt(s), Value::Txt(p)]) => {
                 Ok(Value::Bool(s.ends_with(p.as_str())))
             }
+            ("লেখা", "ধারণ_করে", [Value::Txt(s), Value::Txt(sub)]) => {
+                Ok(Value::Bool(s.contains(sub.as_str())))
+            }
+            ("লেখা", "পুনরাবৃত্তি", [Value::Txt(s), Value::Num(n)]) => {
+                Ok(Value::Txt(s.repeat((*n).max(0) as usize)))
+            }
+            // কোডপয়েন্ট-ভিত্তিক — `স্লাইস`-এর মতোই গ্রাফিম-ক্লাস্টার সচেতন
+            // নয়, তাই যুক্তাক্ষর/কার-চিহ্নযুক্ত বাংলা টেক্সট উল্টালে
+            // ভিজ্যুয়ালি ভাঙা ফল আসতে পারে।
+            ("লেখা", "উল্টানো", [Value::Txt(s)]) => Ok(Value::Txt(s.chars().rev().collect())),
 
             // ফাইল  (পড়ো_লাইন is a global builtin, not a member — it reads
             // from standard input rather than from a file)
@@ -1021,10 +1138,12 @@ impl<'o> Interp<'o> {
 
             // র‍্যান্ডম
             ("র‍্যান্ডম", "বীজ", [Value::Num(s)]) => {
-                self.rng = *s as u64 ^ 0x2545F4914F6CDD1D;
+                self.rng = *s as u64 ^ 0x9E3779B97F4A7C15;
                 Ok(Value::Null)
             }
-            ("র‍্যান্ডম", "সংখ্যা", []) => Ok(Value::Num(self.rng_next() as i64)),
+            // `>> 1` discards the sign bit — matches `kl_rand_num`, which
+            // never returns negative.
+            ("র‍্যান্ডম", "সংখ্যা", []) => Ok(Value::Num((self.rng_next() >> 1) as i64)),
             ("র‍্যান্ডম", "মধ্যে", [Value::Num(lo), Value::Num(hi)]) => {
                 if lo > hi {
                     return Err(err(pos, "'মধ্যে'-তে নিম্নসীমা উচ্চসীমার বেশি"));
@@ -1032,8 +1151,32 @@ impl<'o> Interp<'o> {
                 let span = (hi - lo + 1) as u64;
                 Ok(Value::Num(lo + (self.rng_next() % span) as i64))
             }
+            // Full 53-bit mantissa — matches `kl_rand_dec`, not the coarser
+            // ১০লক্ষ-quantized version this used to be.
             ("র‍্যান্ডম", "দশমিক", []) => {
-                Ok(Value::Dec((self.rng_next() % 1_000_000) as f64 / 1_000_000.0))
+                Ok(Value::Dec((self.rng_next() >> 11) as f64 / (1u64 << 53) as f64))
+            }
+            ("র‍্যান্ডম", "এলোমেলো_পছন্দ", [Value::Arr(a)]) => {
+                let len = a.borrow().len() as i64;
+                // `len == 0` falls through to `index_one`'s own out-of-range
+                // error at index ০ — the same failure ordinary `arr[০]`
+                // indexing on an empty array gives, rather than a bespoke
+                // message for this one caller.
+                let idx = if len == 0 { 0 } else { (self.rng_next() % len as u64) as i64 };
+                self.index_one(Value::Arr(a.clone()), Value::Num(idx), pos)
+            }
+            ("র‍্যান্ডম", "এলোমেলো_মিশ্রণ", [Value::Arr(a)]) => {
+                // Fisher-Yates. Non-mutating like `সাজাও`: clones into a
+                // fresh `Vec` first, so the caller's array is untouched —
+                // arrays alias on assignment/pass (`Rc<RefCell<...>>`), and
+                // shuffling the shared one in place would be a surprise to
+                // every other binding that sees the same array.
+                let mut v = a.borrow().clone();
+                for i in (1..v.len()).rev() {
+                    let j = (self.rng_next() % (i as u64 + 1)) as usize;
+                    v.swap(i, j);
+                }
+                Ok(Value::Arr(Rc::new(RefCell::new(v))))
             }
 
             // ফাইলসিস্টেম
@@ -1259,6 +1402,18 @@ impl<'o> Interp<'o> {
                 }
                 Ok(matf_val(out))
             }
+            // M×v — `গুণ` (M×M) থেকে আলাদা কারণ ফলাফলের আকৃতি ভিন্ন।
+            ("ম্যাট্রিক্স", "ভেক্টর_গুণ", [m, v]) => {
+                let (m, v) = (to_matf(m)?, to_vecf(v)?);
+                let (_, cols) = mat_shape(&m, pos)?;
+                if cols != v.len() {
+                    return Err(err(
+                        pos,
+                        format!("ভেক্টর_গুণ: ম্যাট্রিক্সের কলাম ({}) ভেক্টরের দৈর্ঘ্যের ({}) সমান হতে হবে", cols, v.len()),
+                    ));
+                }
+                Ok(vecf_val(m.iter().map(|row| row.iter().zip(&v).map(|(a, b)| a * b).sum()).collect()))
+            }
             ("ম্যাট্রিক্স", "ট্রান্সপোজ", [m]) => {
                 let m = to_matf(m)?;
                 let (rows, cols) = mat_shape(&m, pos)?;
@@ -1277,6 +1432,14 @@ impl<'o> Interp<'o> {
                     return Err(err(pos, "নির্ণায়ক: শুধু বর্গ ম্যাট্রিক্সের জন্য সংজ্ঞায়িত"));
                 }
                 Ok(Value::Dec(mat_det(m)))
+            }
+            ("ম্যাট্রিক্স", "ট্রেস", [m]) => {
+                let m = to_matf(m)?;
+                let (rows, cols) = mat_shape(&m, pos)?;
+                if rows != cols {
+                    return Err(err(pos, "ট্রেস: শুধু বর্গ ম্যাট্রিক্সের জন্য সংজ্ঞায়িত"));
+                }
+                Ok(Value::Dec((0..rows).map(|i| m[i][i]).sum()))
             }
             ("ম্যাট্রিক্স", "বিপরীত", [m]) => {
                 let m = to_matf(m)?;
@@ -1342,6 +1505,14 @@ impl<'o> Interp<'o> {
                     return Err(err(pos, "বহুভুজের_ক্ষেত্রফল: কমপক্ষে ৩টি [x, y] বিন্দু দরকার"));
                 }
                 Ok(Value::Dec(poly_area(&pts)))
+            }
+            ("জ্যামিতি", "বিন্দু_বহুভুজে_আছে", [px, py, points]) => {
+                let (px, py) = (num_f(px)?, num_f(py)?);
+                let pts = to_matf(points)?;
+                if pts.len() < 3 || pts.iter().any(|p| p.len() != 2) {
+                    return Err(err(pos, "বিন্দু_বহুভুজে_আছে: কমপক্ষে ৩টি [x, y] বিন্দু দরকার"));
+                }
+                Ok(Value::Bool(point_in_polygon(px, py, &pts)))
             }
             ("জ্যামিতি", "গোলকের_আয়তন", [r]) => {
                 Ok(Value::Dec(4.0 / 3.0 * std::f64::consts::PI * num_f(r)?.powi(3)))
@@ -1471,7 +1642,18 @@ impl<'o> Interp<'o> {
                 Ok(Value::Txt(std::env::var(name).unwrap_or_default()))
             }
 
-            // গ্রাফিক্স — ইন্টারপ্রেটেড মোডে আঁকা no-op
+            // গ্রাফিক্স — ইন্টারপ্রেটেড মোডে কোনো উইন্ডো/ইনপুট নেই, তাই
+            // কীবোর্ড/মাউস কোয়েরিগুলো "কিছুই চাপা নেই"/"অবস্থান শূন্য"
+            // ফেরত দেয় — `Value::Null` নয়, যাতে সেমা যে টাইপ প্রতিশ্রুতি
+            // দিয়েছে (বুলিয়ান/সংখ্যা) তার সাথে মেলে এবং `যদি (গ্রাফিক্স.
+            // কী_চাপা_আছে(...))`-এর মতো ব্যবহার আঁকা ছাড়াও ভেঙে না পড়ে।
+            ("গ্রাফিক্স", "কী_চাপা_আছে", _) => Ok(Value::Bool(false)),
+            ("গ্রাফিক্স", "কী_চাপা_হলো", _) => Ok(Value::Bool(false)),
+            ("গ্রাফিক্স", "মাউস_x", _) => Ok(Value::Num(0)),
+            ("গ্রাফিক্স", "মাউস_y", _) => Ok(Value::Num(0)),
+            ("গ্রাফিক্স", "মাউস_চাপা_আছে", _) => Ok(Value::Bool(false)),
+            ("গ্রাফিক্স", "মাউস_ক্লিক_হলো", _) => Ok(Value::Bool(false)),
+            // অন্য সব গ্রাফিক্স ফাংশন (আঁকা, `টিক`) — no-op
             ("গ্রাফিক্স", _, _) => Ok(Value::Null),
 
             _ => Err(err(
@@ -1968,6 +2150,73 @@ fn json_num_field(text: &str, key: &str) -> Option<i64> {
     raw.parse::<i64>().ok()
 }
 
+/// Euclidean algorithm over magnitudes, backing `গণিত.গসাগু`.
+fn gcd_i64(a: i64, b: i64) -> i64 {
+    let (mut a, mut b) = (a.abs(), b.abs());
+    while b != 0 {
+        let t = b;
+        b = a % b;
+        a = t;
+    }
+    a
+}
+
+/// `০` if either input is `০`, matching the usual convention. Backs
+/// `গণিত.লসাগু`.
+fn lcm_i64(a: i64, b: i64) -> i64 {
+    if a == 0 || b == 0 {
+        return 0;
+    }
+    (a / gcd_i64(a, b) * b).abs()
+}
+
+/// Backs `গণিত.ফ্যাক্টোরিয়াল`. See `kolom-runtime`'s `kl_math_factorial` for
+/// why overflow fails rather than wraps.
+fn factorial_i64(n: i64) -> Result<i64, &'static str> {
+    if n < 0 {
+        return Err("ঋণাত্মক সংখ্যার ফ্যাক্টোরিয়াল সংজ্ঞায়িত নয়");
+    }
+    let mut acc: i64 = 1;
+    for i in 2..=n {
+        acc = acc.checked_mul(i).ok_or("ফ্যাক্টোরিয়াল উপচে পড়েছে (সর্বোচ্চ ২০)")?;
+    }
+    Ok(acc)
+}
+
+/// সমাবেশ — nCr. Backs `গণিত.সমাবেশ`; see `kl_math_ncr` for the algorithm
+/// and conventions (`০` outside `[০, n]`, `fail` on a negative `n` or
+/// overflow).
+fn ncr_i64(n: i64, r: i64) -> Result<i64, &'static str> {
+    if n < 0 {
+        return Err("ঋণাত্মক n-এর সমাবেশ সংজ্ঞায়িত নয়");
+    }
+    if r < 0 || r > n {
+        return Ok(0);
+    }
+    let r = r.min(n - r);
+    let mut acc: i64 = 1;
+    for i in 0..r {
+        acc = acc.checked_mul(n - i).ok_or("সমাবেশ উপচে পড়েছে")?;
+        acc /= i + 1;
+    }
+    Ok(acc)
+}
+
+/// বিন্যাস — nPr. Backs `গণিত.বিন্যাস`; same conventions as `ncr_i64`.
+fn npr_i64(n: i64, r: i64) -> Result<i64, &'static str> {
+    if n < 0 {
+        return Err("ঋণাত্মক n-এর বিন্যাস সংজ্ঞায়িত নয়");
+    }
+    if r < 0 || r > n {
+        return Ok(0);
+    }
+    let mut acc: i64 = 1;
+    for i in 0..r {
+        acc = acc.checked_mul(n - i).ok_or("বিন্যাস উপচে পড়েছে")?;
+    }
+    Ok(acc)
+}
+
 fn num_f(v: &Value) -> Result<f64, InterpError> {    match v {
         Value::Num(n) => Ok(*n as f64),
         Value::Dec(d) => Ok(*d),
@@ -2106,6 +2355,25 @@ fn poly_area(points: &[Vec<f64>]) -> f64 {
         })
         .sum();
     sum.abs() / 2.0
+}
+
+/// রে-কাস্টিং (even-odd rule)। Backs `জ্যামিতি.বিন্দু_বহুভুজে_আছে`.
+fn point_in_polygon(px: f64, py: f64, points: &[Vec<f64>]) -> bool {
+    let n = points.len();
+    let mut inside = false;
+    let mut j = n - 1;
+    for i in 0..n {
+        let (xi, yi) = (points[i][0], points[i][1]);
+        let (xj, yj) = (points[j][0], points[j][1]);
+        if (yi > py) != (yj > py) {
+            let x_intersect = xi + (py - yi) / (yj - yi) * (xj - xi);
+            if px < x_intersect {
+                inside = !inside;
+            }
+        }
+        j = i;
+    }
+    inside
 }
 
 // `n` evenly spaced points on the ellipse centered at `(cx, cy)` with radii

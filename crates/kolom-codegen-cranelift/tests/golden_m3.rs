@@ -6,7 +6,7 @@
 //! the UI engine), so neither appears here.
 
 mod harness;
-use harness::{assert_matches_reference, assert_matches_reference_with, run};
+use harness::{assert_matches_reference, assert_matches_reference_module, assert_matches_reference_with};
 
 #[test]
 fn golden_21_stdlib_math() {
@@ -91,17 +91,25 @@ fn golden_47_builtin_parse() {
     assert_matches_reference("47_builtin_parse");
 }
 
-/// র‍্যান্ডম is the one fixture that cannot use the shared reference: this
-/// backend's PRNG deliberately does not reproduce the interpreter's exact
-/// sequence. Its contract is the range, so that is what gets asserted.
+/// র‍্যান্ডম used to be the one fixture that couldn't use the shared
+/// reference — the interpreter and this backend ran different PRNGs. Both
+/// now share the same xorshift64 implementation and seed mixing (see
+/// `kolom-runtime`'s `xorshift_next`/`kolom-interp`'s `Interp::rng_next`),
+/// so a `বীজ`-seeded sequence is identical either way and this fixture
+/// diffs its whole output against the interpreter's `expected.txt` like
+/// every other one.
 #[test]
 fn golden_24_stdlib_random() {
-    let src = include_str!("../../kolom-cli/tests/golden/24_stdlib_random/main.ক");
-    let out = run("24_stdlib_random", src);
-    let lines: Vec<&str> = out.lines().collect();
-    assert_eq!(lines.len(), 3, "expected 3 draws, got: {out:?}");
-    for line in lines {
-        let n: i64 = line.trim().parse().unwrap_or_else(|_| panic!("not a number: {line:?}"));
-        assert!((1..=10).contains(&n), "random value {n} outside [1,10]");
-    }
+    assert_matches_reference("24_stdlib_random");
+}
+
+/// জেসন_মডিউল — a full recursive-descent JSON parser + serializer written
+/// entirely as ordinary Kolom source (see the doc comment at the top of
+/// জেসন_মডিউল.ক for why: a runtime-level implementation can't construct
+/// instances of a user-declared struct, since that struct's field layout is
+/// only known to the compiler pass compiling *this* program, never to
+/// kolom-runtime, which is built once ahead of any user's source existing).
+#[test]
+fn golden_50_json_dom() {
+    assert_matches_reference_module("50_json_dom");
 }

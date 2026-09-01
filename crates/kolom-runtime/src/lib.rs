@@ -595,13 +595,31 @@ pub extern "C" fn kl_math_abs(v: i64) -> i64 {
 pub extern "C" fn kl_math_fabs(v: f64) -> f64 {
     v.abs()
 }
+/// Fails (catchable by `চেষ্টা`) on a negative input, matching the
+/// interpreter's `বর্গমূল` check exactly — this runtime call used to skip
+/// the check entirely, so Cranelift-compiled code silently produced `NaN`
+/// instead of a catchable error. `0.0` is the benign value returned after a
+/// failure; generated code polls `kl_err_pending` and discards it before it
+/// can be observed, same as every other `fail()` site.
 #[no_mangle]
 pub extern "C" fn kl_math_sqrt(v: f64) -> f64 {
+    if v < 0.0 {
+        fail("বর্গমূলে ঋণাত্মক সংখ্যা নেয় না".to_string());
+        return 0.0;
+    }
     v.sqrt()
+}
+#[no_mangle]
+pub extern "C" fn kl_math_cbrt(v: f64) -> f64 {
+    v.cbrt()
 }
 #[no_mangle]
 pub extern "C" fn kl_math_pow(a: f64, b: f64) -> f64 {
     a.powf(b)
+}
+#[no_mangle]
+pub extern "C" fn kl_math_exp(v: f64) -> f64 {
+    v.exp()
 }
 #[no_mangle]
 pub extern "C" fn kl_math_floor(v: f64) -> i64 {
@@ -616,6 +634,19 @@ pub extern "C" fn kl_math_round(v: f64) -> i64 {
     v.round() as i64
 }
 #[no_mangle]
+pub extern "C" fn kl_math_trunc(v: f64) -> i64 {
+    v.trunc() as i64
+}
+/// x-কে `digits` সংখ্যক দশমিক স্থানে রাউন্ড করে (`২.৩৪৫৬৭, ২` -> `২.৩৫`)।
+/// `রাউন্ডঅফ`-এর মতোই round-half-away-from-zero (Rust-এর `f64::round`) —
+/// Cranelift-এর `nearest` (ties-to-even) এর সাথে মেলে না বলে সেই ফাংশনের
+/// মতোই ইনলাইন না করে রানটাইম কলই রাখা হয়েছে।
+#[no_mangle]
+pub extern "C" fn kl_math_round_to(x: f64, digits: i64) -> f64 {
+    let factor = 10f64.powi(digits as i32);
+    (x * factor).round() / factor
+}
+#[no_mangle]
 pub extern "C" fn kl_math_sin(v: f64) -> f64 {
     v.sin()
 }
@@ -628,12 +659,79 @@ pub extern "C" fn kl_math_tan(v: f64) -> f64 {
     v.tan()
 }
 #[no_mangle]
+pub extern "C" fn kl_math_sinh(v: f64) -> f64 {
+    v.sinh()
+}
+#[no_mangle]
+pub extern "C" fn kl_math_cosh(v: f64) -> f64 {
+    v.cosh()
+}
+#[no_mangle]
+pub extern "C" fn kl_math_tanh(v: f64) -> f64 {
+    v.tanh()
+}
+/// Fails outside `[-1, 1]`, matching `আর্কোকোসাইন`/`বর্গমূল`'s domain checks.
+#[no_mangle]
+pub extern "C" fn kl_math_asin(v: f64) -> f64 {
+    if !(-1.0..=1.0).contains(&v) {
+        fail("আর্কসাইনের ইনপুট -১ থেকে ১-এর মধ্যে হতে হবে".to_string());
+        return 0.0;
+    }
+    v.asin()
+}
+#[no_mangle]
+pub extern "C" fn kl_math_acos(v: f64) -> f64 {
+    if !(-1.0..=1.0).contains(&v) {
+        fail("আর্কোকোসাইনের ইনপুট -১ থেকে ১-এর মধ্যে হতে হবে".to_string());
+        return 0.0;
+    }
+    v.acos()
+}
+#[no_mangle]
+pub extern "C" fn kl_math_atan(v: f64) -> f64 {
+    v.atan()
+}
+#[no_mangle]
+pub extern "C" fn kl_math_atan2(y: f64, x: f64) -> f64 {
+    y.atan2(x)
+}
+#[no_mangle]
+pub extern "C" fn kl_math_hypot(a: f64, b: f64) -> f64 {
+    a.hypot(b)
+}
+/// Fails outside its domain (`x <= 0`) instead of quietly returning `-inf`
+/// (at `x == 0`) or `NaN` (`x < 0`), matching `বর্গমূল`/`আর্কসাইন`/
+/// `আর্কোকোসাইন`'s catchable-domain-error convention.
+#[no_mangle]
 pub extern "C" fn kl_math_ln(v: f64) -> f64 {
+    if v <= 0.0 {
+        fail("লনের ইনপুট ধনাত্মক হতে হবে".to_string());
+        return 0.0;
+    }
     v.ln()
 }
 #[no_mangle]
 pub extern "C" fn kl_math_log10(v: f64) -> f64 {
+    if v <= 0.0 {
+        fail("লগের ইনপুট ধনাত্মক হতে হবে".to_string());
+        return 0.0;
+    }
     v.log10()
+}
+/// লগবেস — যেকোনো ভিত্তির লগারিদম, change-of-base দিয়ে (`ln(x) / ln(base)`)।
+/// `x` অবশ্যই ধনাত্মক, `base`-ও ধনাত্মক এবং `১` ছাড়া অন্য কিছু হতে হবে —
+/// `base == ১`-এ `ln(base)` শূন্য হয়ে ভাগ অসংজ্ঞায়িত হয়ে যেত।
+#[no_mangle]
+pub extern "C" fn kl_math_log_base(x: f64, base: f64) -> f64 {
+    if x <= 0.0 {
+        fail("লগবেসের x ধনাত্মক হতে হবে".to_string());
+        return 0.0;
+    }
+    if base <= 0.0 || base == 1.0 {
+        fail("লগবেসের ভিত্তি ধনাত্মক এবং ১ ছাড়া অন্য কিছু হতে হবে".to_string());
+        return 0.0;
+    }
+    x.ln() / base.ln()
 }
 #[no_mangle]
 pub extern "C" fn kl_math_min_i(a: i64, b: i64) -> i64 {
@@ -657,6 +755,117 @@ pub extern "C" fn kl_math_fmod(a: f64, b: f64) -> f64 {
 #[no_mangle]
 pub extern "C" fn kl_math_max_f(a: f64, b: f64) -> f64 {
     a.max(b)
+}
+#[no_mangle]
+pub extern "C" fn kl_math_sign_i(v: i64) -> i64 {
+    v.signum()
+}
+/// Rust's `f64::signum` returns `±1.0` even for zero (`-0.0` gives `-1.0`),
+/// which would make `চিহ্ন(০.০)` read as negative or positive rather than
+/// zero. This gives the zero every schoolbook definition of "sign" expects.
+#[no_mangle]
+pub extern "C" fn kl_math_sign_f(v: f64) -> f64 {
+    if v > 0.0 {
+        1.0
+    } else if v < 0.0 {
+        -1.0
+    } else {
+        0.0
+    }
+}
+/// গসাগু (GCD) — Euclidean algorithm over magnitudes, so the sign of either
+/// input doesn't matter to the caller.
+#[no_mangle]
+pub extern "C" fn kl_math_gcd(a: i64, b: i64) -> i64 {
+    let (mut a, mut b) = (a.abs(), b.abs());
+    while b != 0 {
+        let t = b;
+        b = a % b;
+        a = t;
+    }
+    a
+}
+/// লসাগু (LCM). `০` if either input is `০`, matching the usual convention
+/// (rather than the division below turning that into a spurious `fail`).
+#[no_mangle]
+pub extern "C" fn kl_math_lcm(a: i64, b: i64) -> i64 {
+    if a == 0 || b == 0 {
+        return 0;
+    }
+    (a / kl_math_gcd(a, b) * b).abs()
+}
+/// `n!`. Fails on a negative input or on `i64` overflow — `২১!` already
+/// exceeds `i64::MAX`, so overflow is an ordinary thing to hit here, not an
+/// exotic edge case, and silently wrapping would be a bad surprise.
+#[no_mangle]
+pub extern "C" fn kl_math_factorial(n: i64) -> i64 {
+    if n < 0 {
+        fail("ঋণাত্মক সংখ্যার ফ্যাক্টোরিয়াল সংজ্ঞায়িত নয়".to_string());
+        return 0;
+    }
+    let mut acc: i64 = 1;
+    for i in 2..=n {
+        acc = match acc.checked_mul(i) {
+            Some(v) => v,
+            None => {
+                fail("ফ্যাক্টোরিয়াল উপচে পড়েছে (সর্বোচ্চ ২০)".to_string());
+                return 0;
+            }
+        };
+    }
+    acc
+}
+/// সমাবেশ — nCr. `০` when `r` falls outside `[০, n]` (the standard
+/// combinatorial convention, not an error), `fail`s on a negative `n` or on
+/// overflow. Multiplies and divides one step at a time rather than going
+/// through three factorials, so intermediate values stay far smaller — this
+/// is what lets e.g. `সমাবেশ(৬০, ৩০)` succeed even though `৩০!` alone would
+/// already overflow `kl_math_factorial`. Each step's division is exact: the
+/// running product after `i` steps is always `nCi`, an integer.
+#[no_mangle]
+pub extern "C" fn kl_math_ncr(n: i64, r: i64) -> i64 {
+    if n < 0 {
+        fail("ঋণাত্মক n-এর সমাবেশ সংজ্ঞায়িত নয়".to_string());
+        return 0;
+    }
+    if r < 0 || r > n {
+        return 0;
+    }
+    let r = r.min(n - r);
+    let mut acc: i64 = 1;
+    for i in 0..r {
+        acc = match acc.checked_mul(n - i) {
+            Some(v) => v,
+            None => {
+                fail("সমাবেশ উপচে পড়েছে".to_string());
+                return 0;
+            }
+        };
+        acc /= i + 1;
+    }
+    acc
+}
+/// বিন্যাস — nPr. Same conventions as `kl_math_ncr`.
+#[no_mangle]
+pub extern "C" fn kl_math_npr(n: i64, r: i64) -> i64 {
+    if n < 0 {
+        fail("ঋণাত্মক n-এর বিন্যাস সংজ্ঞায়িত নয়".to_string());
+        return 0;
+    }
+    if r < 0 || r > n {
+        return 0;
+    }
+    let mut acc: i64 = 1;
+    for i in 0..r {
+        acc = match acc.checked_mul(n - i) {
+            Some(v) => v,
+            None => {
+                fail("বিন্যাস উপচে পড়েছে".to_string());
+                return 0;
+            }
+        };
+    }
+    acc
 }
 
 // ============================================================================
@@ -918,15 +1127,36 @@ pub extern "C" fn kl_path_abs(path: *mut u8) -> *mut u8 {
 }
 
 // ============================================================================
-// র‍্যান্ডম (random) — a small seedable xorshift64, deterministic given a
-// seed but NOT intended to match any other implementation's exact sequence.
+// র‍্যান্ডম (random) — a small seedable xorshift64. `kolom-interp`'s own
+// generator mirrors this one exactly (same algorithm, same seed mixing) so
+// `বীজ` reproduces the same sequence whether a program is run interpreted
+// or compiled — see `Interp::rng_next` in kolom-interp for the twin.
 // ============================================================================
 
 use std::sync::atomic::{AtomicU64, Ordering};
+use std::sync::Once;
 
-static RNG_STATE: AtomicU64 = AtomicU64::new(0x9E3779B97F4A7C15);
+static RNG_STATE: AtomicU64 = AtomicU64::new(0);
+static RNG_SEEDED: Once = Once::new();
+
+/// Seeds from wall-clock time on first use, unless `kl_rand_seed` already
+/// ran first. Mirrors `Interp::rng`, which is time-seeded at construction
+/// and only overridden by an explicit `বীজ` call — without this, an
+/// unseeded *compiled* program got the exact same "random" sequence on
+/// every single run (`RNG_STATE`'s old initializer was a fixed constant),
+/// which an unseeded *interpreted* run never did.
+fn ensure_seeded() {
+    RNG_SEEDED.call_once(|| {
+        let t = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .map(|d| d.as_millis() as u64)
+            .unwrap_or(0x9E3779B97F4A7C15);
+        RNG_STATE.store(t ^ 0x9E3779B97F4A7C15, Ordering::Relaxed);
+    });
+}
 
 fn xorshift_next() -> u64 {
+    ensure_seeded();
     let mut x = RNG_STATE.load(Ordering::Relaxed);
     if x == 0 {
         x = 0x9E3779B97F4A7C15;
@@ -941,6 +1171,9 @@ fn xorshift_next() -> u64 {
 #[no_mangle]
 pub extern "C" fn kl_rand_seed(seed: i64) {
     RNG_STATE.store((seed as u64) ^ 0x9E3779B97F4A7C15, Ordering::Relaxed);
+    // Marks the lazy time-seed in `ensure_seeded` as already satisfied, so
+    // it won't clobber this explicit seed on the next `xorshift_next` call.
+    RNG_SEEDED.call_once(|| {});
 }
 
 #[no_mangle]
@@ -955,6 +1188,39 @@ pub extern "C" fn kl_rand_between(lo: i64, hi: i64) -> i64 {
     }
     let span = (hi - lo + 1) as u64;
     lo + (xorshift_next() % span) as i64
+}
+
+/// এলোমেলো_মিশ্রণ — Fisher-Yates shuffle. Non-mutating like `kl_sort_*`:
+/// returns a fresh array, the source untouched. Works over ANY element type
+/// without needing to know what it is — every array slot is a fixed 8 bytes
+/// (see the array layout comment above `kl_arr_new`), so shuffling is just
+/// reordering opaque 8-byte slots, and the output array inherits the input's
+/// own `elem_size`/`drop_elem` wholesale rather than needing one of them
+/// supplied. Owning element types (`drop_elem != 0`) get each moved pointer
+/// incref'd, exactly as `kl_sort_txt` does for the same reason: the new
+/// array now holds its own independent reference to data the source array
+/// still owns too.
+#[no_mangle]
+pub extern "C" fn kl_arr_shuffle(p: *mut u8) -> *mut u8 {
+    let len = kl_arr_len(p);
+    let es = arr_elem_size(p);
+    let drop_addr = arr_drop_addr(p);
+    let mut order: Vec<i64> = (0..len).collect();
+    for i in (1..len).rev() {
+        let j = kl_rand_between(0, i);
+        order.swap(i as usize, j as usize);
+    }
+    let out = kl_arr_new(es, len, drop_addr);
+    for &i in &order {
+        let slot = kl_arr_get_ptr(p, i);
+        if drop_addr != 0 {
+            unsafe {
+                kl_rc_incref(*(slot as *const *mut u8));
+            }
+        }
+        kl_arr_push(out, slot);
+    }
+    out
 }
 
 #[no_mangle]
@@ -1207,6 +1473,34 @@ pub extern "C" fn kl_str_ends_with(p: *mut u8, suffix: *mut u8) -> i8 {
     } else {
         0
     }
+}
+
+#[no_mangle]
+pub extern "C" fn kl_str_contains(p: *mut u8, needle: *mut u8) -> i8 {
+    let s = json_str(unsafe { str_slice(p) });
+    let n = json_str(unsafe { str_slice(needle) });
+    if s.contains(n.as_ref()) {
+        1
+    } else {
+        0
+    }
+}
+
+/// `n` বার পুনরাবৃত্তি করে জোড়া লাগায়। `n <= ০` হলে খালি লেখা।
+#[no_mangle]
+pub extern "C" fn kl_str_repeat(p: *mut u8, n: i64) -> *mut u8 {
+    let s = json_str(unsafe { str_slice(p) });
+    str_from_rust(&s.repeat(n.max(0) as usize))
+}
+
+/// কোডপয়েন্ট-ভিত্তিক উল্টানো — `স্লাইস`/`দৈর্ঘ্য`-এর মতোই গ্রাফিম-ক্লাস্টার
+/// সচেতন নয়, তাই যুক্তাক্ষর বা কার-চিহ্নযুক্ত বাংলা টেক্সট উল্টালে ভিজ্যুয়ালি
+/// ভাঙা ফল আসতে পারে (কার-চিহ্ন তার ব্যঞ্জনবর্ণের আগে চলে যায়) — এই মডিউলের
+/// প্রতিটি ফাংশনেরই একই সীমাবদ্ধতা, শুধু এখানে সবচেয়ে বেশি চোখে পড়ে।
+#[no_mangle]
+pub extern "C" fn kl_str_reverse(p: *mut u8) -> *mut u8 {
+    let s = json_str(unsafe { str_slice(p) });
+    str_from_rust(&s.chars().rev().collect::<String>())
 }
 
 // ============================================================================
@@ -1724,6 +2018,38 @@ pub extern "C" fn kl_mat_mul(a: *mut u8, b: *mut u8) -> *mut u8 {
     arr_from_matf(&out)
 }
 
+/// M×v — প্রতিটি সারি v-এর সাথে ডট করে একটি দশমিক[] ফেরত দেয়, `ম্যাট্রিক্স.গুণ`
+/// (M×M) থেকে আলাদা ফাংশন কারণ ফলাফলের আকৃতি ভিন্ন (ভেক্টর, ম্যাট্রিক্স নয়)।
+#[no_mangle]
+pub extern "C" fn kl_mat_vec_mul(m: *mut u8, v: *mut u8) -> *mut u8 {
+    let (m, v) = unsafe { (matf_from_arr(m), vecf_from_arr(v)) };
+    let Some(cols) = mat_rect_cols(&m) else {
+        fail("ভেক্টর_গুণ: ম্যাট্রিক্সের প্রতিটি সারি একই দৈর্ঘ্যের হতে হবে".into());
+        return arr_from_vecf(&[]);
+    };
+    if cols != v.len() {
+        fail(format!(
+            "ভেক্টর_গুণ: ম্যাট্রিক্সের কলাম ({}) ভেক্টরের দৈর্ঘ্যের ({}) সমান হতে হবে",
+            cols,
+            v.len()
+        ));
+        return arr_from_vecf(&[]);
+    }
+    arr_from_vecf(&m.iter().map(|row| row.iter().zip(&v).map(|(a, b)| a * b).sum()).collect::<Vec<_>>())
+}
+
+#[no_mangle]
+pub extern "C" fn kl_mat_trace(m: *mut u8) -> f64 {
+    let m = unsafe { matf_from_arr(m) };
+    match mat_rect_cols(&m) {
+        Some(cols) if cols == m.len() => (0..m.len()).map(|i| m[i][i]).sum(),
+        _ => {
+            fail("ট্রেস: শুধু বর্গ ম্যাট্রিক্সের জন্য সংজ্ঞায়িত".into());
+            0.0
+        }
+    }
+}
+
 #[no_mangle]
 pub extern "C" fn kl_mat_transpose(m: *mut u8) -> *mut u8 {
     let m = unsafe { matf_from_arr(m) };
@@ -1862,6 +2188,36 @@ pub extern "C" fn kl_geo_polygon_area(points: *mut u8) -> f64 {
         })
         .sum();
     sum.abs() / 2.0
+}
+
+/// রে-কাস্টিং (even-odd rule)। `points` কমপক্ষে ৩টি [x, y] বিন্দু হতে হবে,
+/// `বহুভুজের_ক্ষেত্রফল`-এর মতোই।
+#[no_mangle]
+pub extern "C" fn kl_geo_point_in_polygon(px: f64, py: f64, points: *mut u8) -> i8 {
+    let pts = unsafe { matf_from_arr(points) };
+    if pts.len() < 3 || pts.iter().any(|p| p.len() != 2) {
+        fail("বিন্দু_বহুভুজে_আছে: কমপক্ষে ৩টি [x, y] বিন্দু দরকার".into());
+        return 0;
+    }
+    let n = pts.len();
+    let mut inside = false;
+    let mut j = n - 1;
+    for i in 0..n {
+        let (xi, yi) = (pts[i][0], pts[i][1]);
+        let (xj, yj) = (pts[j][0], pts[j][1]);
+        if (yi > py) != (yj > py) {
+            let x_intersect = xi + (py - yi) / (yj - yi) * (xj - xi);
+            if px < x_intersect {
+                inside = !inside;
+            }
+        }
+        j = i;
+    }
+    if inside {
+        1
+    } else {
+        0
+    }
 }
 
 #[no_mangle]

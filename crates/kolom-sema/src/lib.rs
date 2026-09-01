@@ -43,26 +43,49 @@ pub fn stdlib_lookup(module: &str, item: &str) -> Option<StdSig> {
         ("গণিত", "পাই") => Const(d()),
         ("গণিত", "ই") => Const(d()),
         ("গণিত", "বর্গমূল") => Fn(vec![d()], d()),
+        ("গণিত", "ঘনমূল") => Fn(vec![d()], d()),
         ("গণিত", "ঘাত") => Fn(vec![d(), d()], d()),
+        ("গণিত", "এক্সপ") => Fn(vec![d()], d()),
         ("গণিত", "ফ্লোর") => Fn(vec![d()], i()),
         ("গণিত", "সিলিং") => Fn(vec![d()], i()),
         ("গণিত", "রাউন্ডঅফ") => Fn(vec![d()], i()),
+        ("গণিত", "ট্রাংক") => Fn(vec![d()], i()),
+        ("গণিত", "দশমিক_রাউন্ড") => Fn(vec![d(), i()], d()),
         ("গণিত", "সাইন") => Fn(vec![d()], d()),
         ("গণিত", "কোসাইন") => Fn(vec![d()], d()),
         ("গণিত", "ট্যান") => Fn(vec![d()], d()),
+        ("গণিত", "হাইপারবোলিক_সাইন") => Fn(vec![d()], d()),
+        ("গণিত", "হাইপারবোলিক_কোসাইন") => Fn(vec![d()], d()),
+        ("গণিত", "হাইপারবোলিক_ট্যান") => Fn(vec![d()], d()),
+        ("গণিত", "আর্কসাইন") => Fn(vec![d()], d()),
+        ("গণিত", "আর্কোকোসাইন") => Fn(vec![d()], d()),
+        ("গণিত", "আর্কট্যান") => Fn(vec![d()], d()),
+        ("গণিত", "আর্কট্যান২") => Fn(vec![d(), d()], d()),
+        ("গণিত", "হাইপো") => Fn(vec![d(), d()], d()),
+        ("গণিত", "রেডিয়ানে") => Fn(vec![d()], d()),
+        ("গণিত", "ডিগ্রিতে") => Fn(vec![d()], d()),
+        ("গণিত", "রৈখিক_ইন্টারপোলেশন") => Fn(vec![d(), d(), d()], d()),
         // `লগ` is base ten, the way an unmarked "log" is read in Bangladeshi
         // schooling; the natural logarithm is spelled out. It used to be the
         // other way round, which quietly returned ln to anyone who wrote what
         // they were taught.
         ("গণিত", "লগ") => Fn(vec![d()], d()),
         ("গণিত", "লন") => Fn(vec![d()], d()),
-        // These three take সংখ্যা or দশমিক — `check_math_overload` decides,
+        ("গণিত", "লগবেস") => Fn(vec![d(), d()], d()),
+        ("গণিত", "গসাগু") => Fn(vec![i(), i()], i()),
+        ("গণিত", "লসাগু") => Fn(vec![i(), i()], i()),
+        ("গণিত", "ফ্যাক্টোরিয়াল") => Fn(vec![i()], i()),
+        ("গণিত", "সমাবেশ") => Fn(vec![i(), i()], i()),
+        ("গণিত", "বিন্যাস") => Fn(vec![i(), i()], i()),
+        // These five take সংখ্যা or দশমিক — `check_math_overload` decides,
         // and intercepts the call before this signature is consulted. The
-        // entries exist so `গণিত.সর্বনিম্ন` is still *found* when it appears
-        // outside a call.
+        // entries exist so e.g. `গণিত.সর্বনিম্ন` is still *found* when it
+        // appears outside a call.
         ("গণিত", "পরম_মান") => Fn(vec![i()], i()),
+        ("গণিত", "চিহ্ন") => Fn(vec![i()], i()),
         ("গণিত", "সর্বনিম্ন") => Fn(vec![i(), i()], i()),
         ("গণিত", "সর্বোচ্চ") => Fn(vec![i(), i()], i()),
+        ("গণিত", "সীমাবদ্ধ") => Fn(vec![i(), i(), i()], i()),
 
         ("লেখা", "বড়হাতের") => Fn(vec![s()], s()),
         ("লেখা", "ছোটহাতের") => Fn(vec![s()], s()),
@@ -74,6 +97,9 @@ pub fn stdlib_lookup(module: &str, item: &str) -> Option<StdSig> {
         ("লেখা", "স্লাইস") => Fn(vec![s(), i(), i()], s()),
         ("লেখা", "শুরুতে_আছে") => Fn(vec![s(), s()], b()),
         ("লেখা", "শেষে_আছে") => Fn(vec![s(), s()], b()),
+        ("লেখা", "ধারণ_করে") => Fn(vec![s(), s()], b()),
+        ("লেখা", "পুনরাবৃত্তি") => Fn(vec![s(), i()], s()),
+        ("লেখা", "উল্টানো") => Fn(vec![s()], s()),
 
         ("ফাইল", "পড়ো") => Fn(vec![s()], s()),
         ("ফাইল", "লেখো") => Fn(vec![s(), s()], n()),
@@ -112,6 +138,13 @@ pub fn stdlib_lookup(module: &str, item: &str) -> Option<StdSig> {
         ("র‍্যান্ডম", "সংখ্যা") => Fn(vec![], i()),
         ("র‍্যান্ডম", "মধ্যে") => Fn(vec![i(), i()], i()),
         ("র‍্যান্ডম", "দশমিক") => Fn(vec![], d()),
+        // `এলোমেলো_পছন্দ`/`এলোমেলো_মিশ্রণ` take an array of any element
+        // type — `check_random_array` decides, and intercepts the call
+        // before this signature is consulted. Placeholder সংখ্যা[] entries
+        // exist so the names are still *found* when they appear outside a
+        // call, same reasoning as `গণিত`'s overloaded entries above.
+        ("র‍্যান্ডম", "এলোমেলো_পছন্দ") => Fn(vec![Ty::Arr(Box::new(i()))], i()),
+        ("র‍্যান্ডম", "এলোমেলো_মিশ্রণ") => Fn(vec![Ty::Arr(Box::new(i()))], Ty::Arr(Box::new(i()))),
 
         ("ফাইলসিস্টেম", "ফাইল_আছে") => Fn(vec![s()], b()),
         ("ফাইলসিস্টেম", "ডিরেক্টরি_আছে") => Fn(vec![s()], b()),
@@ -177,6 +210,35 @@ pub fn stdlib_lookup(module: &str, item: &str) -> Option<StdSig> {
         ("গ্রাফিক্স", "বহুভুজ") => Fn(vec![ma()], n()),
         ("গ্রাফিক্স", "ভরাট_বহুভুজ") => Fn(vec![ma()], n()),
 
+        // কীবোর্ড/মাউস — প্রতি-ফ্রেম পোলিং, `টিক` হ্যান্ডলারের ভেতর থেকে
+        // পড়ার জন্য বানানো (ইভেন্ট/কলব্যাক নয়)। `_আছে` = এই মুহূর্তে চাপা
+        // আছে কিনা, `_হলো` = এই ফ্রেমে (গত `টিক`-এর পর থেকে) প্রথমবার চাপা
+        // হয়েছে কিনা — পরের `টিক` শুরুতেই রিসেট হয়। মাউস বাটন: ০=বাম,
+        // ১=ডান, ২=মাঝখান। অক্ষর/সংখ্যা কী-এর জন্য কোনো ধ্রুবক দরকার নেই —
+        // তাদের ভার্চুয়াল-কী কোড তাদের বড়হাতের ASCII কোডের সমান (যেমন 'A' এর
+        // জন্য ৬৫)। নিচের ধ্রুবকগুলো শুধু নন-প্রিন্টিং কী-দের জন্য, যাদের কোড
+        // অনুমান করা যায় না — নামগুলো platform-independent রাখা হয়েছে
+        // ইচ্ছাকৃতভাবে (আজ Win32 ভার্চুয়াল-কী কোড, কিন্তু ভবিষ্যতে অন্য কোনো
+        // গ্রাফিক্স ব্যাকএন্ড এলে শুধু এই মানগুলো বদলাতে হবে, ব্যবহারকারীর
+        // কোড নয়)।
+        ("গ্রাফিক্স", "উপরের_তীর") => Const(i()),
+        ("গ্রাফিক্স", "নিচের_তীর") => Const(i()),
+        ("গ্রাফিক্স", "বামের_তীর") => Const(i()),
+        ("গ্রাফিক্স", "ডানের_তীর") => Const(i()),
+        ("গ্রাফিক্স", "স্পেস") => Const(i()),
+        ("গ্রাফিক্স", "এন্টার") => Const(i()),
+        ("গ্রাফিক্স", "এস্কেপ") => Const(i()),
+        ("গ্রাফিক্স", "শিফট") => Const(i()),
+        ("গ্রাফিক্স", "কন্ট্রোল") => Const(i()),
+        ("গ্রাফিক্স", "ট্যাব") => Const(i()),
+        ("গ্রাফিক্স", "ব্যাকস্পেস") => Const(i()),
+        ("গ্রাফিক্স", "কী_চাপা_আছে") => Fn(vec![i()], b()),
+        ("গ্রাফিক্স", "কী_চাপা_হলো") => Fn(vec![i()], b()),
+        ("গ্রাফিক্স", "মাউস_x") => Fn(vec![], i()),
+        ("গ্রাফিক্স", "মাউস_y") => Fn(vec![], i()),
+        ("গ্রাফিক্স", "মাউস_চাপা_আছে") => Fn(vec![i()], b()),
+        ("গ্রাফিক্স", "মাউস_ক্লিক_হলো") => Fn(vec![i()], b()),
+
         // ম্যাট্রিক্স: ভেক্টর = দশমিক[], ম্যাট্রিক্স = দশমিক[][] (row-major)।
         // সংখ্যা[]/সংখ্যা[][] নেয় না — নির্ণায়ক/বিপরীত সবসময় ভগ্নাংশ ফল দিতে
         // পারে (গণিত.বর্গমূল-এর মতো), তাই ইনপুট-টাইপ যাই হোক আউটপুট সবসময়
@@ -192,8 +254,11 @@ pub fn stdlib_lookup(module: &str, item: &str) -> Option<StdSig> {
         ("ম্যাট্রিক্স", "বিয়োগ") => Fn(vec![ma(), ma()], ma()),
         ("ম্যাট্রিক্স", "স্কেল") => Fn(vec![ma(), d()], ma()),
         ("ম্যাট্রিক্স", "গুণ") => Fn(vec![ma(), ma()], ma()),
+        // M×v — `গুণ` (M×M) থেকে আলাদা কারণ ফলাফলের আকৃতি ভিন্ন।
+        ("ম্যাট্রিক্স", "ভেক্টর_গুণ") => Fn(vec![ma(), da()], da()),
         ("ম্যাট্রিক্স", "ট্রান্সপোজ") => Fn(vec![ma()], ma()),
         ("ম্যাট্রিক্স", "নির্ণায়ক") => Fn(vec![ma()], d()),
+        ("ম্যাট্রিক্স", "ট্রেস") => Fn(vec![ma()], d()),
         ("ম্যাট্রিক্স", "বিপরীত") => Fn(vec![ma()], ma()),
         ("ম্যাট্রিক্স", "অভেদক") => Fn(vec![i()], ma()),
         ("ম্যাট্রিক্স", "শূন্য_ম্যাট্রিক্স") => Fn(vec![i(), i()], ma()),
@@ -220,6 +285,7 @@ pub fn stdlib_lookup(module: &str, item: &str) -> Option<StdSig> {
         ("জ্যামিতি", "নিয়মিত_বহুভুজ") => Fn(vec![d(), d(), d(), i()], ma()),
         ("জ্যামিতি", "উপবৃত্ত_বিন্দু") => Fn(vec![d(), d(), d(), d(), i()], ma()),
         ("জ্যামিতি", "রেখার_ছেদ") => Fn(vec![d(), d(), d(), d(), d(), d(), d(), d()], da()),
+        ("জ্যামিতি", "বিন্দু_বহুভুজে_আছে") => Fn(vec![d(), d(), ma()], b()),
 
         // পরিসংখ্যান — সব দশমিক[] (ম্যাট্রিক্সের ভেক্টর কনভেনশন)। রৈখিক_রিগ্রেশন
         // [ঢাল, ছেদ] ফেরত দেয়, জ্যামিতি.ঘোরানোর মতো ২-উপাদানের দশমিক[]।
@@ -1385,10 +1451,38 @@ impl Ck {
                             }
                         }
                     }
+                    // Mirrors the bare-`ExprKind::Qualified` case above
+                    // (`ব.ম` with no further suffix) — without this, a chain
+                    // like `ব.ম[কী]` or `ব.ম()` (a struct field itself
+                    // indexed/called) fell straight through to the
+                    // stdlib-constant lookup below, silently landing on
+                    // `Ty::Unknown` for any local struct field access and
+                    // making the *next* suffix guess the wrong shape (e.g.
+                    // `[কী]` on an `Unknown` base defaults to expecting a
+                    // `সংখ্যা` index even when the field is a `ম্যাপ[লেখা,
+                    // ...]`).
                     ExprKind::Qualified { module, name } => {
-                        match stdlib_lookup(&module.name, &name.name) {
-                            Some(StdSig::Const(t)) => t,
-                            _ => Ty::Unknown,
+                        match self.lookup(&module.name) {
+                            Some(sym) if matches!(&sym.ty, Ty::Struct(_)) => {
+                                let Ty::Struct(sname) = sym.ty.clone() else { unreachable!() };
+                                match self.structs.get(&sname) {
+                                    Some(fields) => match fields.iter().find(|(n, _)| n == &name.name) {
+                                        Some((_, ft)) => ft.clone(),
+                                        None => {
+                                            self.err(
+                                                name.pos,
+                                                format!("'{}' তথ্যে ফিল্ড '{}' নেই", sname, name.name),
+                                            );
+                                            Ty::Err
+                                        }
+                                    },
+                                    None => Ty::Err,
+                                }
+                            }
+                            _ => match stdlib_lookup(&module.name, &name.name) {
+                                Some(StdSig::Const(t)) => t,
+                                _ => Ty::Unknown,
+                            },
                         }
                     }
                     _ => self.expr(base).unwrap_or(Ty::Unknown),
@@ -1857,9 +1951,10 @@ impl Ck {
         sig.ret
     }
 
-    /// `পরম_মান`, `সর্বনিম্ন` and `সর্বোচ্চ` accept either `সংখ্যা` or
-    /// `দশমিক` and give back the same type. Returns `None` for anything else,
-    /// leaving it to the ordinary signature table.
+    /// `পরম_মান`, `চিহ্ন`, `সর্বনিম্ন`, `সর্বোচ্চ` and `সীমাবদ্ধ` accept
+    /// either `সংখ্যা` or `দশমিক` (every argument the same one) and give
+    /// back that type. Returns `None` for anything else, leaving it to the
+    /// ordinary signature table.
     ///
     /// Kolom has no general overloading, so this is a deliberate special case.
     /// The alternative is a separate name per type, which is where `পরমদ` and
@@ -1871,8 +1966,9 @@ impl Ck {
     /// alone would be a surprise.
     fn check_math_overload(&mut self, item: &str, pos: Pos, args: &[Expr]) -> Option<Ty> {
         let arity = match item {
-            "পরম_মান" => 1,
+            "পরম_মান" | "চিহ্ন" => 1,
             "সর্বনিম্ন" | "সর্বোচ্চ" => 2,
+            "সীমাবদ্ধ" => 3,
             _ => return None,
         };
         if args.len() != arity {
@@ -1912,6 +2008,45 @@ impl Ck {
         Some(Ty::Err)
     }
 
+    /// `এলোমেলো_পছন্দ`/`এলোমেলো_মিশ্রণ` accept an array of ANY element
+    /// type — unlike `সাজাও` (needs an ordering, restricted to
+    /// সংখ্যা/দশমিক/লেখা), picking or shuffling doesn't care what the
+    /// elements are. Intercepted here for the same reason as
+    /// `check_math_overload`: genuinely type-parametric behaviour the
+    /// ordinary fixed-type signature table can't express. Returns `None`
+    /// for anything else, leaving it to the ordinary signature table.
+    fn check_random_array(&mut self, item: &str, pos: Pos, args: &[Expr]) -> Option<Ty> {
+        if !matches!(item, "এলোমেলো_পছন্দ" | "এলোমেলো_মিশ্রণ") {
+            return None;
+        }
+        if args.len() != 1 {
+            self.err(
+                pos,
+                format!(
+                    "'র‍্যান্ডম.{}' ১টি আর্গুমেন্ট নেয়, {}টি পেয়েছে",
+                    item,
+                    bn_num(args.len() as u32)
+                ),
+            );
+            for a in args {
+                let _ = self.expr(a);
+            }
+            return Some(Ty::Err);
+        }
+        let t = self.expr(&args[0]).unwrap_or(Ty::Unknown);
+        match t {
+            Ty::Err | Ty::Unknown => Some(Ty::Err),
+            Ty::Arr(elem) => Some(if item == "এলোমেলো_পছন্দ" { *elem } else { Ty::Arr(elem) }),
+            other => {
+                self.err(
+                    pos,
+                    format!("'র‍্যান্ডম.{}'-এর আর্গুমেন্ট একটি অ্যারে হতে হবে ({} পাওয়া গেছে)", item, other),
+                );
+                Some(Ty::Err)
+            }
+        }
+    }
+
     fn call_stdlib(&mut self, module: &str, item: &str, pos: Pos, args: &[Expr]) -> Ty {
         if !self.imports.contains(module) {
             // Not a stdlib module — a package's functions were merged into
@@ -1942,6 +2077,11 @@ impl Ck {
         }
         if module == "গণিত" {
             if let Some(t) = self.check_math_overload(item, pos, args) {
+                return t;
+            }
+        }
+        if module == "র‍্যান্ডম" {
+            if let Some(t) = self.check_random_array(item, pos, args) {
                 return t;
             }
         }

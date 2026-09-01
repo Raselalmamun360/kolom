@@ -104,12 +104,15 @@ const FALLIBLE_RT: &[&str] = &[
     "kl_mat_add",
     "kl_mat_sub",
     "kl_mat_mul",
+    "kl_mat_vec_mul",
     "kl_mat_transpose",
     "kl_mat_det",
+    "kl_mat_trace",
     "kl_mat_inv",
     "kl_mat_identity",
     "kl_mat_zeros",
     "kl_geo_polygon_area",
+    "kl_geo_point_in_polygon",
     "kl_geo_regular_polygon",
     "kl_geo_ellipse_points",
     "kl_geo_line_intersect",
@@ -575,7 +578,27 @@ impl Gen {
             (CVal::Bool(a), CVal::Bool(c)) => bool_binop(b, op, a, c),
             (CVal::Txt(a), CVal::Txt(c)) => match op {
                 BinOp::Add => Ok(CVal::Txt(self.call_rt(b, "kl_str_concat", &[a, c]))),
-                _ => Err("M3 codegen: 'লেখা'-এ শুধু + (জোড়া লাগানো) সমর্থিত".into()),
+                // No dedicated string-equality runtime call exists (or is
+                // needed): `a == c` iff they're the same length and `a`
+                // starts with `c` — composed entirely from `kl_str_cplen`/
+                // `kl_str_starts_with`, both already runtime exports used
+                // elsewhere (`দৈর্ঘ্য`, `শুরুতে_আছে`), so no new runtime
+                // surface for a comparison this fundamental (interp already
+                // supports it via plain Rust `==` on `String`; this was the
+                // one binary op missing on the compiled side).
+                BinOp::Eq | BinOp::Neq => {
+                    let len_a = self.call_rt(b, "kl_str_cplen", &[a]);
+                    let len_c = self.call_rt(b, "kl_str_cplen", &[c]);
+                    let same_len = b.ins().icmp(IntCC::Equal, len_a, len_c);
+                    let starts = self.call_rt(b, "kl_str_starts_with", &[a, c]);
+                    let eq = b.ins().band(same_len, starts);
+                    if op == BinOp::Eq {
+                        Ok(CVal::Bool(eq))
+                    } else {
+                        Ok(CVal::Bool(b.ins().icmp_imm_u(IntCC::Equal, eq, 0)))
+                    }
+                }
+                _ => Err("M3 codegen: 'লেখা'-এ শুধু +/==/!= সমর্থিত".into()),
             },
             (CVal::Arr(a, ta), CVal::Arr(c, tc)) => {
                 if ta != tc {
@@ -1240,6 +1263,43 @@ impl Gen {
                     }
                     return Ok(cur);
                 }
+                // A call immediately followed by `.field`/`[i]` on its own
+                // result (`জেসন_ক্ষেত্র(v, "নাম").লেখা_মান`, `বিন্দু(3,4).ক`)
+                // — the branches above only match a call with *nothing*
+                // after it, or a run of Index/Field with *no* call at all,
+                // so this shape fell through to the "unsupported" error
+                // below even though a struct constructor or user function
+                // call is exactly as indexable/field-accessible as any other
+                // struct/array/map-producing expression. Only struct
+                // constructors and user functions are handled here (not the
+                // builtin names above, e.g. `লেখো(...)`/`শেয়ার_করো(...)`)
+                // since those are the only ones whose result is ever a
+                // struct/array/map worth chaining off of.
+                if let ExprKind::Ident(id) = &base.kind {
+                    if let Some(Suffix::Call(args, _)) = suffixes.first() {
+                        let rest = &suffixes[1..];
+                        if !rest.is_empty() && rest.iter().all(|s| matches!(s, Suffix::Index(..) | Suffix::Field(_))) {
+                            let mut cur = if self.structs.contains_key(&id.name) {
+                                self.lower_struct_new(b, &id.name, args, env)?
+                            } else if self.funcs.contains_key(&id.name) {
+                                self.lower_call(b, &id.name, args, env)?
+                            } else {
+                                return Err(format!(
+                                    "M3 codegen: '{}()'-এর ফলাফলে ফিল্ড/ইনডেক্স অ্যাক্সেস সমর্থিত নয়",
+                                    id.name
+                                ));
+                            };
+                            for sfx in rest {
+                                cur = match sfx {
+                                    Suffix::Index(ix, _) => self.apply_index(b, cur, ix, env)?,
+                                    Suffix::Field(fld) => self.apply_field(b, cur, fld)?,
+                                    Suffix::Call(..) => unreachable!("filtered out by the all() check above"),
+                                };
+                            }
+                            return Ok(cur);
+                        }
+                    }
+                }
                 Err("M3 codegen: এই postfix expression এখনো সমর্থিত নয়".into())
             }
             ExprKind::Qualified { module, name } => {
@@ -1247,20 +1307,37 @@ impl Gen {
                 // `stdlib_module.item` syntactically — both are `Ident.Ident`.
                 // If `module` resolves to a local Struct-typed variable,
                 // treat this as a field read; otherwise it's an actual
-                // stdlib access. Only two stdlib names are ever bare
-                // constants rather than calls — `গণিত`-এর `পাই`/`ই` — so
-                // those are checked directly rather than generalizing the
-                // whole `StdSig::Const` mechanism for a set of two.
-                if module.name == "গণিত" && env.lookup(&module.name).is_none() {
-                    match name.name.as_str() {
-                        "পাই" => {
+                // stdlib access. Bare stdlib constants (`গণিত`-এর `পাই`/`ই`,
+                // `গ্রাফিক্স`-এর কী-কোড ধ্রুবকগুলো) are checked directly
+                // here rather than generalizing the whole `StdSig::Const`
+                // mechanism — sema already carries their *type*, but not
+                // their runtime value, and there are few enough of these
+                // that a second per-backend copy of the values (interp has
+                // its own, in `Interp::eval`'s `ExprKind::Qualified` arm) is
+                // simpler than inventing a shared value table for it.
+                if env.lookup(&module.name).is_none() {
+                    match (module.name.as_str(), name.name.as_str()) {
+                        ("গণিত", "পাই") => {
                             let v = b.ins().f64const(std::f64::consts::PI);
                             return Ok(CVal::Dec(v));
                         }
-                        "ই" => {
+                        ("গণিত", "ই") => {
                             let v = b.ins().f64const(std::f64::consts::E);
                             return Ok(CVal::Dec(v));
                         }
+                        // Win32 ভার্চুয়াল-কী কোড — `kolom_runtime::ui`-এর
+                        // `wndproc`-এর সাথে মিলিয়ে রাখা।
+                        ("গ্রাফিক্স", "উপরের_তীর") => return Ok(CVal::Num(b.ins().iconst(types::I64, 0x26))),
+                        ("গ্রাফিক্স", "নিচের_তীর") => return Ok(CVal::Num(b.ins().iconst(types::I64, 0x28))),
+                        ("গ্রাফিক্স", "বামের_তীর") => return Ok(CVal::Num(b.ins().iconst(types::I64, 0x25))),
+                        ("গ্রাফিক্স", "ডানের_তীর") => return Ok(CVal::Num(b.ins().iconst(types::I64, 0x27))),
+                        ("গ্রাফিক্স", "স্পেস") => return Ok(CVal::Num(b.ins().iconst(types::I64, 0x20))),
+                        ("গ্রাফিক্স", "এন্টার") => return Ok(CVal::Num(b.ins().iconst(types::I64, 0x0D))),
+                        ("গ্রাফিক্স", "এস্কেপ") => return Ok(CVal::Num(b.ins().iconst(types::I64, 0x1B))),
+                        ("গ্রাফিক্স", "শিফট") => return Ok(CVal::Num(b.ins().iconst(types::I64, 0x10))),
+                        ("গ্রাফিক্স", "কন্ট্রোল") => return Ok(CVal::Num(b.ins().iconst(types::I64, 0x11))),
+                        ("গ্রাফিক্স", "ট্যাব") => return Ok(CVal::Num(b.ins().iconst(types::I64, 0x09))),
+                        ("গ্রাফিক্স", "ব্যাকস্পেস") => return Ok(CVal::Num(b.ins().iconst(types::I64, 0x08))),
                         _ => {}
                     }
                 }
@@ -1317,7 +1394,21 @@ impl Gen {
                 Ty::Map(_key_ty, val_ty) => {
                     let val_ty = *val_ty;
                     let map_ptr = b.use_var(sym.var);
-                    let kv = self.lower_expr(b, ix_expr, env)?;
+                    // `_for_binding`, matching `rv` just below: a `লেখা` key
+                    // that names a plain variable needs its own incref, the
+                    // same as any other owning value the map now holds an
+                    // independent reference to. Missing this was a real
+                    // use-after-free — a key variable reused/rebound next
+                    // loop iteration (the exact shape of a hand-written
+                    // parser's `ধরি কী = ...` inside a `যতক্ষণ`) gets
+                    // decref'd back down once its own scope moves on, and
+                    // once that hits zero the map is left holding a pointer
+                    // into freed memory that a later allocation can and does
+                    // reuse — corrupting the *previous* key/value with
+                    // whatever the map's own next entry happens to be built
+                    // from, exactly the "keys go missing/garbled" symptom
+                    // this fixes.
+                    let kv = self.lower_expr_for_binding(b, ix_expr, env)?;
                     let key_bits = self.map_key_bits(b, &kv)?;
                     let rv = self.lower_expr_for_binding(b, rhs, env)?;
                     let slot_ss = b.create_sized_stack_slot(StackSlotData::new(StackSlotKind::ExplicitSlot, 8, 0));
@@ -1392,6 +1483,15 @@ impl Gen {
         }
     }
 
+    /// f64 -> i64, saturating on overflow and mapping NaN to `0` rather than
+    /// trapping — the behaviour `kl_math_floor`/`kl_math_ceil` got for free
+    /// from Rust's `as i64`, reproduced here via Cranelift's saturating
+    /// conversion opcode now that those two callers emit `floor`/`ceil`
+    /// inline instead of going through the runtime call.
+    fn dec_sat_to_num(&mut self, b: &mut FunctionBuilder, v: Value) -> Value {
+        b.ins().fcvt_to_sint_sat(types::I64, v)
+    }
+
     fn lower_expr_txt(&mut self, b: &mut FunctionBuilder, e: &Expr, env: &mut Env) -> Result<Value, String> {
         match self.lower_expr(b, e, env)? {
             CVal::Txt(v) => Ok(v),
@@ -1443,27 +1543,135 @@ impl Gen {
             }};
         }
         match (module, item) {
-            ("গণিত", "বর্গমূল") => dec1!("kl_math_sqrt"),
-            ("গণিত", "ফ্লোর") => dec1_num!("kl_math_floor"),
-            ("গণিত", "সিলিং") => dec1_num!("kl_math_ceil"),
+            // `পরম_মান`(দশমিক)/`ফ্লোর`/`সিলিং`/`সর্বনিম্ন`(সংখ্যা)/`সর্বোচ্চ`
+            // (সংখ্যা) below emit a single Cranelift IR opcode (`fabs`,
+            // `floor`, `ceil`, `smin`, `smax`) instead of a `call_rt` FFI hop
+            // through the runtime crate — each lowers to one hardware
+            // instruction (andps, roundsd, ...) with behaviour identical to
+            // the Rust the runtime call used to run. Three things that look
+            // like the same opportunity deliberately are NOT inlined this
+            // way:
+            //   - `বর্গমূল` needs the negative-input domain check `fail()`s
+            //     on (see `kl_math_sqrt`), so it stays a runtime call.
+            //   - `রাউন্ডঅফ`'s Cranelift equivalent (`nearest`) is
+            //     round-half-to-even, but `kl_math_round` is round-half-
+            //     away-from-zero (Rust's `f64::round`) — inlining would
+            //     silently flip ties like ২.৫ from ৩ to ২.
+            //   - `সর্বনিম্ন`/`সর্বোচ্চ` on দশমিক stay `kl_math_min_f`/
+            //     `kl_math_max_f` (Rust's `f64::min`/`max`, which return the
+            //     non-NaN operand): Cranelift's `fmin`/`fmax` use the
+            //     WebAssembly rule of propagating NaN instead, which is the
+            //     opposite behaviour whenever one argument is NaN.
+            ("গণিত", "বর্গমূল") => {
+                let a = self.lower_expr_dec(b, &args[0], env)?;
+                Ok(CVal::Dec(self.call_rt(b, "kl_math_sqrt", &[a])))
+            }
+            ("গণিত", "ঘনমূল") => dec1!("kl_math_cbrt"),
+            ("গণিত", "এক্সপ") => dec1!("kl_math_exp"),
+            ("গণিত", "ফ্লোর") => {
+                let a = self.lower_expr_dec(b, &args[0], env)?;
+                let f = b.ins().floor(a);
+                Ok(CVal::Num(self.dec_sat_to_num(b, f)))
+            }
+            ("গণিত", "সিলিং") => {
+                let a = self.lower_expr_dec(b, &args[0], env)?;
+                let c = b.ins().ceil(a);
+                Ok(CVal::Num(self.dec_sat_to_num(b, c)))
+            }
             ("গণিত", "রাউন্ডঅফ") => dec1_num!("kl_math_round"),
+            ("গণিত", "ট্রাংক") => dec1_num!("kl_math_trunc"),
+            ("গণিত", "দশমিক_রাউন্ড") => {
+                let x = self.lower_expr_dec(b, &args[0], env)?;
+                let digits = self.lower_expr_num(b, &args[1], env)?;
+                Ok(CVal::Dec(self.call_rt(b, "kl_math_round_to", &[x, digits])))
+            }
             ("গণিত", "সাইন") => dec1!("kl_math_sin"),
             ("গণিত", "কোসাইন") => dec1!("kl_math_cos"),
             ("গণিত", "ট্যান") => dec1!("kl_math_tan"),
+            ("গণিত", "হাইপারবোলিক_সাইন") => dec1!("kl_math_sinh"),
+            ("গণিত", "হাইপারবোলিক_কোসাইন") => dec1!("kl_math_cosh"),
+            ("গণিত", "হাইপারবোলিক_ট্যান") => dec1!("kl_math_tanh"),
+            ("গণিত", "আর্কসাইন") => dec1!("kl_math_asin"),
+            ("গণিত", "আর্কোকোসাইন") => dec1!("kl_math_acos"),
+            ("গণিত", "আর্কট্যান") => dec1!("kl_math_atan"),
+            ("গণিত", "আর্কট্যান২") => {
+                let y = self.lower_expr_dec(b, &args[0], env)?;
+                let x = self.lower_expr_dec(b, &args[1], env)?;
+                Ok(CVal::Dec(self.call_rt(b, "kl_math_atan2", &[y, x])))
+            }
+            ("গণিত", "হাইপো") => {
+                let a = self.lower_expr_dec(b, &args[0], env)?;
+                let c = self.lower_expr_dec(b, &args[1], env)?;
+                Ok(CVal::Dec(self.call_rt(b, "kl_math_hypot", &[a, c])))
+            }
+            // Pure arithmetic on a constant — no libm call needed, unlike
+            // the trig functions themselves.
+            ("গণিত", "রেডিয়ানে") => {
+                let a = self.lower_expr_dec(b, &args[0], env)?;
+                let k = b.ins().f64const(std::f64::consts::PI / 180.0);
+                Ok(CVal::Dec(b.ins().fmul(a, k)))
+            }
+            ("গণিত", "ডিগ্রিতে") => {
+                let a = self.lower_expr_dec(b, &args[0], env)?;
+                let k = b.ins().f64const(180.0 / std::f64::consts::PI);
+                Ok(CVal::Dec(b.ins().fmul(a, k)))
+            }
+            ("গণিত", "রৈখিক_ইন্টারপোলেশন") => {
+                let a = self.lower_expr_dec(b, &args[0], env)?;
+                let bb = self.lower_expr_dec(b, &args[1], env)?;
+                let t = self.lower_expr_dec(b, &args[2], env)?;
+                let diff = b.ins().fsub(bb, a);
+                let scaled = b.ins().fmul(diff, t);
+                Ok(CVal::Dec(b.ins().fadd(a, scaled)))
+            }
             ("গণিত", "লগ") => dec1!("kl_math_log10"),
             ("গণিত", "লন") => dec1!("kl_math_ln"),
+            ("গণিত", "লগবেস") => {
+                let x = self.lower_expr_dec(b, &args[0], env)?;
+                let base = self.lower_expr_dec(b, &args[1], env)?;
+                Ok(CVal::Dec(self.call_rt(b, "kl_math_log_base", &[x, base])))
+            }
+            ("গণিত", "গসাগু") => {
+                let a = self.lower_expr_num(b, &args[0], env)?;
+                let c = self.lower_expr_num(b, &args[1], env)?;
+                Ok(CVal::Num(self.call_rt(b, "kl_math_gcd", &[a, c])))
+            }
+            ("গণিত", "লসাগু") => {
+                let a = self.lower_expr_num(b, &args[0], env)?;
+                let c = self.lower_expr_num(b, &args[1], env)?;
+                Ok(CVal::Num(self.call_rt(b, "kl_math_lcm", &[a, c])))
+            }
+            ("গণিত", "ফ্যাক্টোরিয়াল") => {
+                let a = self.lower_expr_num(b, &args[0], env)?;
+                Ok(CVal::Num(self.call_rt(b, "kl_math_factorial", &[a])))
+            }
+            ("গণিত", "সমাবেশ") => {
+                let a = self.lower_expr_num(b, &args[0], env)?;
+                let c = self.lower_expr_num(b, &args[1], env)?;
+                Ok(CVal::Num(self.call_rt(b, "kl_math_ncr", &[a, c])))
+            }
+            ("গণিত", "বিন্যাস") => {
+                let a = self.lower_expr_num(b, &args[0], env)?;
+                let c = self.lower_expr_num(b, &args[1], env)?;
+                Ok(CVal::Num(self.call_rt(b, "kl_math_npr", &[a, c])))
+            }
             ("গণিত", "ঘাত") => {
                 let a = self.lower_expr_dec(b, &args[0], env)?;
                 let c = self.lower_expr_dec(b, &args[1], env)?;
                 Ok(CVal::Dec(self.call_rt(b, "kl_math_pow", &[a, c])))
             }
-            // `পরম_মান`, `সর্বনিম্ন` and `সর্বোচ্চ` take সংখ্যা or দশমিক.
-            // Sema has already established that every argument agrees, so
-            // lowering the first one decides which runtime call to make.
+            // `পরম_মান`, `চিহ্ন`, `সর্বনিম্ন` and `সর্বোচ্চ` take সংখ্যা or
+            // দশমিক. Sema has already established that every argument
+            // agrees, so lowering the first one decides which path to take.
             ("গণিত", "পরম_মান") => match self.lower_expr(b, &args[0], env)? {
-                CVal::Dec(x) => Ok(CVal::Dec(self.call_rt(b, "kl_math_fabs", &[x]))),
+                CVal::Dec(x) => Ok(CVal::Dec(b.ins().fabs(x))),
                 CVal::Num(x) => Ok(CVal::Num(self.call_rt(b, "kl_math_abs", &[x]))),
                 _ => Err("M3 codegen: 'গণিত.পরম_মান'-এ 'সংখ্যা' বা 'দশমিক' দরকার".into()),
+            },
+            ("গণিত", "চিহ্ন") => match self.lower_expr(b, &args[0], env)? {
+                CVal::Dec(x) => Ok(CVal::Dec(self.call_rt(b, "kl_math_sign_f", &[x]))),
+                CVal::Num(x) => Ok(CVal::Num(self.call_rt(b, "kl_math_sign_i", &[x]))),
+                _ => Err("M3 codegen: 'গণিত.চিহ্ন'-এ 'সংখ্যা' বা 'দশমিক' দরকার".into()),
             },
             ("গণিত", "সর্বনিম্ন") | ("গণিত", "সর্বোচ্চ") => {
                 let lo = item == "সর্বনিম্ন";
@@ -1475,12 +1683,31 @@ impl Gen {
                     }
                     CVal::Num(a) => {
                         let c = self.lower_expr_num(b, &args[1], env)?;
-                        let f = if lo { "kl_math_min_i" } else { "kl_math_max_i" };
-                        Ok(CVal::Num(self.call_rt(b, f, &[a, c])))
+                        let r = if lo { b.ins().smin(a, c) } else { b.ins().smax(a, c) };
+                        Ok(CVal::Num(r))
                     }
                     _ => Err("M3 codegen: 'গণিত.সর্বনিম্ন/সর্বোচ্চ'-এ 'সংখ্যা' বা 'দশমিক' দরকার".into()),
                 }
             }
+            // `x.max(lo).min(hi)`, decomposed into the same building blocks
+            // as `সর্বনিম্ন`/`সর্বোচ্চ` just above — inline `smin`/`smax` for
+            // সংখ্যা, `kl_math_min_f`/`kl_math_max_f` for দশমিক (no new
+            // runtime function needed either way).
+            ("গণিত", "সীমাবদ্ধ") => match self.lower_expr(b, &args[0], env)? {
+                CVal::Dec(x) => {
+                    let lo = self.lower_expr_dec(b, &args[1], env)?;
+                    let hi = self.lower_expr_dec(b, &args[2], env)?;
+                    let clamped_lo = self.call_rt(b, "kl_math_max_f", &[x, lo]);
+                    Ok(CVal::Dec(self.call_rt(b, "kl_math_min_f", &[clamped_lo, hi])))
+                }
+                CVal::Num(x) => {
+                    let lo = self.lower_expr_num(b, &args[1], env)?;
+                    let hi = self.lower_expr_num(b, &args[2], env)?;
+                    let clamped_lo = b.ins().smax(x, lo);
+                    Ok(CVal::Num(b.ins().smin(clamped_lo, hi)))
+                }
+                _ => Err("M3 codegen: 'গণিত.সীমাবদ্ধ'-এ 'সংখ্যা' বা 'দশমিক' দরকার".into()),
+            },
 
             ("লেখা", "বড়হাতের") => txt1_txt!("kl_str_upper"),
             ("লেখা", "ছোটহাতের") => txt1_txt!("kl_str_lower"),
@@ -1506,10 +1733,24 @@ impl Gen {
                 let n = self.lower_expr_txt(b, &args[1], env)?;
                 Ok(CVal::Num(self.call_rt(b, "kl_str_find", &[a, n])))
             }
+            // `স্লাইস(s, start, len)` — Kolom-facing contract is length-based
+            // (matches the interpreter and docs/language.md), but the
+            // runtime primitive `kl_str_slice(p, start, end)` is an
+            // end-index-based substring — a reasonable, unrelated low-level
+            // op in its own right, not itself wrong. This backend used to
+            // pass the Kolom-level `len` straight through as `kl_str_slice`'s
+            // `end`, silently reinterpreting "length" as "end index"
+            // whenever `start != 0` (the two coincide exactly when
+            // `start == 0`, which is why no existing golden fixture — all of
+            // which slice from index ০ — ever caught this). Computing
+            // `end = start + len` here, once, keeps `kl_str_slice` itself
+            // untouched and correct for any future caller that wants an
+            // end-index slice directly.
             ("লেখা", "স্লাইস") => {
                 let a = self.lower_expr_txt(b, &args[0], env)?;
                 let start = self.lower_expr_num(b, &args[1], env)?;
-                let end = self.lower_expr_num(b, &args[2], env)?;
+                let len = self.lower_expr_num(b, &args[2], env)?;
+                let end = b.ins().iadd(start, len);
                 Ok(CVal::Txt(self.call_rt(b, "kl_str_slice", &[a, start, end])))
             }
             ("লেখা", "শুরুতে_আছে") => {
@@ -1522,6 +1763,17 @@ impl Gen {
                 let suf = self.lower_expr_txt(b, &args[1], env)?;
                 Ok(CVal::Bool(self.call_rt(b, "kl_str_ends_with", &[a, suf])))
             }
+            ("লেখা", "ধারণ_করে") => {
+                let a = self.lower_expr_txt(b, &args[0], env)?;
+                let sub = self.lower_expr_txt(b, &args[1], env)?;
+                Ok(CVal::Bool(self.call_rt(b, "kl_str_contains", &[a, sub])))
+            }
+            ("লেখা", "পুনরাবৃত্তি") => {
+                let a = self.lower_expr_txt(b, &args[0], env)?;
+                let n = self.lower_expr_num(b, &args[1], env)?;
+                Ok(CVal::Txt(self.call_rt(b, "kl_str_repeat", &[a, n])))
+            }
+            ("লেখা", "উল্টানো") => txt1_txt!("kl_str_reverse"),
 
             ("ফাইল", "লেখো") => {
                 let p = self.lower_expr_txt(b, &args[0], env)?;
@@ -1553,6 +1805,34 @@ impl Gen {
                 let hi = self.lower_expr_num(b, &args[1], env)?;
                 Ok(CVal::Num(self.call_rt(b, "kl_rand_between", &[lo, hi])))
             }
+            // Same load path as ordinary `arr[i]` indexing (`apply_index`
+            // below) with a runtime-computed index instead of a lowered
+            // `Expr` — an empty array (`len - ১ == -১`) makes
+            // `kl_rand_between` return `০`, which `kl_arr_get_ptr` then
+            // answers with the same catchable out-of-range failure ordinary
+            // `arr[০]` indexing on an empty array would give.
+            ("র‍্যান্ডম", "এলোমেলো_পছন্দ") => match self.lower_expr(b, &args[0], env)? {
+                CVal::Arr(ptr, elem_ty) => {
+                    let lenf = self.module.declare_func_in_func(self.arr_len, b.func);
+                    let len_call = b.ins().call(lenf, &[ptr]);
+                    let len = b.inst_results(len_call)[0];
+                    let last = b.ins().iadd_imm_s(len, -1);
+                    let zero = b.ins().iconst(types::I64, 0);
+                    let idx = self.call_rt(b, "kl_rand_between", &[zero, last]);
+                    let getf = self.module.declare_func_in_func(self.arr_get_ptr, b.func);
+                    let get_call = b.ins().call(getf, &[ptr, idx]);
+                    let addr = b.inst_results(get_call)[0];
+                    self.maybe_poll(b);
+                    Ok(self.load_cval(b, &elem_ty, addr, 0))
+                }
+                _ => Err("M3 codegen: 'র‍্যান্ডম.এলোমেলো_পছন্দ'-এ একটি অ্যারে দরকার".into()),
+            },
+            ("র‍্যান্ডম", "এলোমেলো_মিশ্রণ") => match self.lower_expr(b, &args[0], env)? {
+                CVal::Arr(ptr, elem_ty) => {
+                    Ok(CVal::Arr(self.call_rt(b, "kl_arr_shuffle", &[ptr]), elem_ty))
+                }
+                _ => Err("M3 codegen: 'র‍্যান্ডম.এলোমেলো_মিশ্রণ'-এ একটি অ্যারে দরকার".into()),
+            },
 
             ("ফাইলসিস্টেম", "ফাইল_আছে") => {
                 let p = self.lower_expr_txt(b, &args[0], env)?;
@@ -1730,6 +2010,24 @@ impl Gen {
                 self.call_rt_void(b, "kl_ui_tick", &[ms, addr]);
                 Ok(CVal::Void)
             }
+            ("গ্রাফিক্স", "কী_চাপা_আছে") => {
+                let vk = self.lower_expr_num(b, &args[0], env)?;
+                Ok(CVal::Bool(self.call_rt(b, "kl_input_key_down", &[vk])))
+            }
+            ("গ্রাফিক্স", "কী_চাপা_হলো") => {
+                let vk = self.lower_expr_num(b, &args[0], env)?;
+                Ok(CVal::Bool(self.call_rt(b, "kl_input_key_pressed", &[vk])))
+            }
+            ("গ্রাফিক্স", "মাউস_x") => Ok(CVal::Num(self.call_rt(b, "kl_input_mouse_x", &[]))),
+            ("গ্রাফিক্স", "মাউস_y") => Ok(CVal::Num(self.call_rt(b, "kl_input_mouse_y", &[]))),
+            ("গ্রাফিক্স", "মাউস_চাপা_আছে") => {
+                let btn = self.lower_expr_num(b, &args[0], env)?;
+                Ok(CVal::Bool(self.call_rt(b, "kl_input_mouse_down", &[btn])))
+            }
+            ("গ্রাফিক্স", "মাউস_ক্লিক_হলো") => {
+                let btn = self.lower_expr_num(b, &args[0], env)?;
+                Ok(CVal::Bool(self.call_rt(b, "kl_input_mouse_pressed", &[btn])))
+            }
 
             // নেটওয়ার্ক — TCP client. Sockets live in a registry inside
             // kolom-runtime; Kolom sees only integer handles.
@@ -1810,6 +2108,11 @@ impl Gen {
                 let c = self.lower_expr_arr(b, &args[1], env)?;
                 Ok(CVal::Arr(self.call_rt(b, "kl_mat_mul", &[a, c]), Box::new(Ty::Arr(Box::new(Ty::Dec)))))
             }
+            ("ম্যাট্রিক্স", "ভেক্টর_গুণ") => {
+                let m = self.lower_expr_arr(b, &args[0], env)?;
+                let v = self.lower_expr_arr(b, &args[1], env)?;
+                Ok(CVal::Arr(self.call_rt(b, "kl_mat_vec_mul", &[m, v]), Box::new(Ty::Dec)))
+            }
             ("ম্যাট্রিক্স", "ট্রান্সপোজ") => {
                 let m = self.lower_expr_arr(b, &args[0], env)?;
                 Ok(CVal::Arr(self.call_rt(b, "kl_mat_transpose", &[m]), Box::new(Ty::Arr(Box::new(Ty::Dec)))))
@@ -1817,6 +2120,10 @@ impl Gen {
             ("ম্যাট্রিক্স", "নির্ণায়ক") => {
                 let m = self.lower_expr_arr(b, &args[0], env)?;
                 Ok(CVal::Dec(self.call_rt(b, "kl_mat_det", &[m])))
+            }
+            ("ম্যাট্রিক্স", "ট্রেস") => {
+                let m = self.lower_expr_arr(b, &args[0], env)?;
+                Ok(CVal::Dec(self.call_rt(b, "kl_mat_trace", &[m])))
             }
             ("ম্যাট্রিক্স", "বিপরীত") => {
                 let m = self.lower_expr_arr(b, &args[0], env)?;
@@ -1939,6 +2246,12 @@ impl Gen {
                 let x4 = self.lower_expr_dec(b, &args[6], env)?;
                 let y4 = self.lower_expr_dec(b, &args[7], env)?;
                 Ok(CVal::Arr(self.call_rt(b, "kl_geo_line_intersect", &[x1, y1, x2, y2, x3, y3, x4, y4]), Box::new(Ty::Dec)))
+            }
+            ("জ্যামিতি", "বিন্দু_বহুভুজে_আছে") => {
+                let px = self.lower_expr_dec(b, &args[0], env)?;
+                let py = self.lower_expr_dec(b, &args[1], env)?;
+                let pts = self.lower_expr_arr(b, &args[2], env)?;
+                Ok(CVal::Bool(self.call_rt(b, "kl_geo_point_in_polygon", &[px, py, pts])))
             }
 
             // পরিসংখ্যান
@@ -2848,15 +3161,35 @@ pub fn emit_for(prog: &Program, target: crate::link::Target) -> Result<Vec<u8>, 
         ("kl_math_abs", &[i64t], &[i64t]),
         ("kl_math_fabs", &[f64t], &[f64t]),
         ("kl_math_sqrt", &[f64t], &[f64t]),
+        ("kl_math_cbrt", &[f64t], &[f64t]),
         ("kl_math_pow", &[f64t, f64t], &[f64t]),
+        ("kl_math_exp", &[f64t], &[f64t]),
         ("kl_math_floor", &[f64t], &[i64t]),
         ("kl_math_ceil", &[f64t], &[i64t]),
         ("kl_math_round", &[f64t], &[i64t]),
+        ("kl_math_trunc", &[f64t], &[i64t]),
+        ("kl_math_round_to", &[f64t, i64t], &[f64t]),
         ("kl_math_sin", &[f64t], &[f64t]),
         ("kl_math_cos", &[f64t], &[f64t]),
         ("kl_math_tan", &[f64t], &[f64t]),
+        ("kl_math_sinh", &[f64t], &[f64t]),
+        ("kl_math_cosh", &[f64t], &[f64t]),
+        ("kl_math_tanh", &[f64t], &[f64t]),
+        ("kl_math_asin", &[f64t], &[f64t]),
+        ("kl_math_acos", &[f64t], &[f64t]),
+        ("kl_math_atan", &[f64t], &[f64t]),
+        ("kl_math_atan2", &[f64t, f64t], &[f64t]),
+        ("kl_math_hypot", &[f64t, f64t], &[f64t]),
         ("kl_math_ln", &[f64t], &[f64t]),
         ("kl_math_log10", &[f64t], &[f64t]),
+        ("kl_math_log_base", &[f64t, f64t], &[f64t]),
+        ("kl_math_gcd", &[i64t, i64t], &[i64t]),
+        ("kl_math_lcm", &[i64t, i64t], &[i64t]),
+        ("kl_math_factorial", &[i64t], &[i64t]),
+        ("kl_math_ncr", &[i64t, i64t], &[i64t]),
+        ("kl_math_npr", &[i64t, i64t], &[i64t]),
+        ("kl_math_sign_i", &[i64t], &[i64t]),
+        ("kl_math_sign_f", &[f64t], &[f64t]),
         ("kl_math_min_i", &[i64t, i64t], &[i64t]),
         ("kl_math_max_i", &[i64t, i64t], &[i64t]),
         ("kl_math_min_f", &[f64t, f64t], &[f64t]),
@@ -2879,6 +3212,9 @@ pub fn emit_for(prog: &Program, target: crate::link::Target) -> Result<Vec<u8>, 
         ("kl_str_slice", &[ptr_ty, i64t, i64t], &[ptr_ty]),
         ("kl_str_starts_with", &[ptr_ty, ptr_ty], &[i8t]),
         ("kl_str_ends_with", &[ptr_ty, ptr_ty], &[i8t]),
+        ("kl_str_contains", &[ptr_ty, ptr_ty], &[i8t]),
+        ("kl_str_repeat", &[ptr_ty, i64t], &[ptr_ty]),
+        ("kl_str_reverse", &[ptr_ty], &[ptr_ty]),
         // ফাইল / ফাইলসিস্টেম
         ("kl_io_write_file", &[ptr_ty, ptr_ty], &[]),
         ("kl_io_append_file", &[ptr_ty, ptr_ty], &[]),
@@ -2907,6 +3243,7 @@ pub fn emit_for(prog: &Program, target: crate::link::Target) -> Result<Vec<u8>, 
         ("kl_rand_seed", &[i64t], &[]),
         ("kl_rand_num", &[], &[i64t]),
         ("kl_rand_between", &[i64t, i64t], &[i64t]),
+        ("kl_arr_shuffle", &[ptr_ty], &[ptr_ty]),
         ("kl_rand_dec", &[], &[f64t]),
         // জেসন
         ("kl_json_valid", &[ptr_ty], &[i8t]),
@@ -2972,6 +3309,14 @@ pub fn emit_for(prog: &Program, target: crate::link::Target) -> Result<Vec<u8>, 
         ("kl_g_arc", &[i64t, i64t, i64t, i64t, i64t], &[]),
         ("kl_g_sector", &[i64t, i64t, i64t, i64t, i64t], &[]),
         ("kl_g_fillsector", &[i64t, i64t, i64t, i64t, i64t], &[]),
+        // কীবোর্ড/মাউস — per-frame polling, see the sema-side comment on
+        // `("গ্রাফিক্স", "কী_চাপা_আছে")` for the level-vs-edge contract.
+        ("kl_input_key_down", &[i64t], &[i8t]),
+        ("kl_input_key_pressed", &[i64t], &[i8t]),
+        ("kl_input_mouse_x", &[], &[i64t]),
+        ("kl_input_mouse_y", &[], &[i64t]),
+        ("kl_input_mouse_down", &[i64t], &[i8t]),
+        ("kl_input_mouse_pressed", &[i64t], &[i8t]),
         // ম্যাট্রিক্স
         ("kl_mat_vec_add", &[ptr_ty, ptr_ty], &[ptr_ty]),
         ("kl_mat_vec_sub", &[ptr_ty, ptr_ty], &[ptr_ty]),
@@ -2983,8 +3328,10 @@ pub fn emit_for(prog: &Program, target: crate::link::Target) -> Result<Vec<u8>, 
         ("kl_mat_sub", &[ptr_ty, ptr_ty], &[ptr_ty]),
         ("kl_mat_scale", &[ptr_ty, f64t], &[ptr_ty]),
         ("kl_mat_mul", &[ptr_ty, ptr_ty], &[ptr_ty]),
+        ("kl_mat_vec_mul", &[ptr_ty, ptr_ty], &[ptr_ty]),
         ("kl_mat_transpose", &[ptr_ty], &[ptr_ty]),
         ("kl_mat_det", &[ptr_ty], &[f64t]),
+        ("kl_mat_trace", &[ptr_ty], &[f64t]),
         ("kl_mat_inv", &[ptr_ty], &[ptr_ty]),
         ("kl_mat_identity", &[i64t], &[ptr_ty]),
         ("kl_mat_zeros", &[i64t, i64t], &[ptr_ty]),
@@ -3007,6 +3354,7 @@ pub fn emit_for(prog: &Program, target: crate::link::Target) -> Result<Vec<u8>, 
         ("kl_geo_regular_polygon", &[f64t, f64t, f64t, i64t], &[ptr_ty]),
         ("kl_geo_ellipse_points", &[f64t, f64t, f64t, f64t, i64t], &[ptr_ty]),
         ("kl_geo_line_intersect", &[f64t, f64t, f64t, f64t, f64t, f64t, f64t, f64t], &[ptr_ty]),
+        ("kl_geo_point_in_polygon", &[f64t, f64t, ptr_ty], &[i8t]),
         // পরিসংখ্যান
         ("kl_stat_sum", &[ptr_ty], &[f64t]),
         ("kl_stat_mean", &[ptr_ty], &[f64t]),

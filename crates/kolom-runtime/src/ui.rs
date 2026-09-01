@@ -12,6 +12,8 @@
 //!   C version did, with a `TextOutW` fallback when unavailable.
 //! - The `KLOM_UI_AUTOCLOSE_MS` / `KLOM_UI_SCRIPT_CLICKS` test hooks are
 //!   preserved verbatim so existing headless UI tests keep working.
+//!   `KLOM_UI_SCRIPT_INPUT` is a newer addition in the same spirit, for
+//!   headlessly testing `গ্রাফিক্স`'s keyboard/mouse polling functions.
 //!
 //! Everything here is process-global mutable state driven by a single UI
 //! thread (the Win32 message loop), matching the C original's design; the
@@ -67,6 +69,7 @@ pub(crate) mod imp {
     const TIMER_AUTOCLOSE: usize = 1;
     const TIMER_CLICKS: usize = 2;
     const TIMER_TICK: usize = 3;
+    const TIMER_INPUT: usize = 4;
 
     fn rgb(r: u32, g: u32, b: u32) -> COLORREF {
         r | (g << 8) | (b << 16)
@@ -115,6 +118,28 @@ pub(crate) mod imp {
         gcolor: COLORREF,
         click_script: Vec<i32>,
         click_pos: usize,
+        /// `KLOM_UI_SCRIPT_INPUT` — headless test hook mirroring
+        /// `click_script`: one `InputStep` at a time, played by `TIMER_INPUT`
+        /// through real `PostMessageW` calls, so a scripted test exercises
+        /// the actual `WM_KEYDOWN`/`WM_KEYUP`/`WM_MOUSEMOVE`/button-message
+        /// arms rather than poking `Ui` state directly.
+        input_script: Vec<InputStep>,
+        input_script_pos: usize,
+        /// Held-down state per Win32 virtual-key code, live-updated from
+        /// `WM_KEYDOWN`/`WM_KEYUP`.
+        keys_down: [bool; 256],
+        /// "Pressed since the last `টিক`" edge per virtual-key code — set on
+        /// the `WM_KEYDOWN` that transitions a key from up to down (auto-
+        /// repeat while held does *not* re-set it, since `keys_down` is
+        /// already true by then), cleared at the start of every `TIMER_TICK`.
+        keys_pressed: [bool; 256],
+        mouse_x: i32,
+        mouse_y: i32,
+        /// Indexed ০=বাম, ১=ডান, ২=মাঝখান, mirroring `kl_input_mouse_down`'s
+        /// `btn` parameter.
+        mouse_down: [bool; 3],
+        /// Same edge/clear contract as `keys_pressed`, per mouse button.
+        mouse_pressed: [bool; 3],
     }
 
     static mut UI: Option<Ui> = None;
@@ -133,6 +158,14 @@ pub(crate) mod imp {
                     gcolor: rgb(0, 0, 0),
                     click_script: Vec::new(),
                     click_pos: 0,
+                    input_script: Vec::new(),
+                    input_script_pos: 0,
+                    keys_down: [false; 256],
+                    keys_pressed: [false; 256],
+                    mouse_x: 0,
+                    mouse_y: 0,
+                    mouse_down: [false; 3],
+                    mouse_pressed: [false; 3],
                 });
             }
             UI.as_mut().unwrap()
@@ -433,6 +466,60 @@ pub(crate) mod imp {
         let ms = ms.max(16) as u32;
         unsafe {
             SetTimer(u.hwnd, TIMER_TICK, ms, None);
+        }
+    }
+
+    // ---- কীবোর্ড/মাউস পোলিং — `wndproc`-এর WM_KEYDOWN/UP, WM_MOUSEMOVE,
+    // WM_*BUTTONDOWN/UP আর্মগুলো `Ui`-এর state হালনাগাদ করে; এই ফাংশনগুলো
+    // শুধু সেটা পড়ে, সবই একই UI থ্রেডে বলে কোনো লকিং দরকার নেই। ----
+
+    #[no_mangle]
+    pub extern "C" fn kl_input_key_down(vk: i64) -> i8 {
+        let i = vk as usize;
+        if i < 256 && ui().keys_down[i] {
+            1
+        } else {
+            0
+        }
+    }
+
+    #[no_mangle]
+    pub extern "C" fn kl_input_key_pressed(vk: i64) -> i8 {
+        let i = vk as usize;
+        if i < 256 && ui().keys_pressed[i] {
+            1
+        } else {
+            0
+        }
+    }
+
+    #[no_mangle]
+    pub extern "C" fn kl_input_mouse_x() -> i64 {
+        ui().mouse_x as i64
+    }
+
+    #[no_mangle]
+    pub extern "C" fn kl_input_mouse_y() -> i64 {
+        ui().mouse_y as i64
+    }
+
+    #[no_mangle]
+    pub extern "C" fn kl_input_mouse_down(btn: i64) -> i8 {
+        let i = btn as usize;
+        if i < 3 && ui().mouse_down[i] {
+            1
+        } else {
+            0
+        }
+    }
+
+    #[no_mangle]
+    pub extern "C" fn kl_input_mouse_pressed(btn: i64) -> i8 {
+        let i = btn as usize;
+        if i < 3 && ui().mouse_pressed[i] {
+            1
+        } else {
+            0
         }
     }
 
@@ -942,6 +1029,48 @@ pub(crate) mod imp {
         }
     }
 
+    /// One step of `KLOM_UI_SCRIPT_INPUT` — see that field's doc comment on
+    /// `Ui::input_script`.
+    enum InputStep {
+        /// Tap a VK code: `WM_KEYDOWN` immediately followed by `WM_KEYUP`.
+        Key(i32),
+        /// Move to `(x, y)`, then tap mouse button `btn` (০=বাম, ১=ডান,
+        /// ২=মাঝখান) if `btn >= 0` — pass a negative button to move without
+        /// clicking.
+        Mouse(i32, i32, i32),
+    }
+
+    /// Parses `KLOM_UI_SCRIPT_INPUT`: steps separated by `;`, each either
+    /// `কী:<vk>` or `মাউস:<x>,<y>,<btn>`. Malformed steps are skipped rather
+    /// than failing the whole script — this is a test-only hook, not
+    /// user-facing input to validate strictly.
+    fn parse_input_script(s: &str) -> Vec<InputStep> {
+        s.split(';')
+            .filter_map(|step| {
+                let step = step.trim();
+                if let Some(rest) = step.strip_prefix("কী:") {
+                    rest.trim().parse::<i32>().ok().map(InputStep::Key)
+                } else if let Some(rest) = step.strip_prefix("মাউস:") {
+                    let mut it = rest.split(',').filter_map(|n| n.trim().parse::<i32>().ok());
+                    Some(InputStep::Mouse(it.next()?, it.next()?, it.next()?))
+                } else {
+                    None
+                }
+            })
+            .collect()
+    }
+
+    fn next_scripted_input() -> Option<InputStep> {
+        let u = ui();
+        if u.input_script_pos < u.input_script.len() {
+            let step = std::mem::replace(&mut u.input_script[u.input_script_pos], InputStep::Key(0));
+            u.input_script_pos += 1;
+            Some(step)
+        } else {
+            None
+        }
+    }
+
     unsafe extern "system" fn wndproc(h: HWND, msg: u32, wp: WPARAM, lp: LPARAM) -> LRESULT {
         match msg {
             WM_PAINT => {
@@ -962,6 +1091,8 @@ pub(crate) mod imp {
                 let mx = (lp & 0xFFFF) as i16 as i32;
                 let my = ((lp >> 16) & 0xFFFF) as i16 as i32;
                 let u = ui();
+                u.mouse_down[0] = true;
+                u.mouse_pressed[0] = true;
                 let mut hit_btn: Option<usize> = None;
                 let mut hit_in: Option<usize> = None;
                 for i in 0..u.pool.len() {
@@ -1002,6 +1133,59 @@ pub(crate) mod imp {
                 SetFocus(h);
                 0
             }
+            WM_LBUTTONUP => {
+                ui().mouse_down[0] = false;
+                0
+            }
+            WM_RBUTTONDOWN => {
+                let u = ui();
+                u.mouse_down[1] = true;
+                u.mouse_pressed[1] = true;
+                0
+            }
+            WM_RBUTTONUP => {
+                ui().mouse_down[1] = false;
+                0
+            }
+            WM_MBUTTONDOWN => {
+                let u = ui();
+                u.mouse_down[2] = true;
+                u.mouse_pressed[2] = true;
+                0
+            }
+            WM_MBUTTONUP => {
+                ui().mouse_down[2] = false;
+                0
+            }
+            WM_MOUSEMOVE => {
+                let u = ui();
+                u.mouse_x = (lp & 0xFFFF) as i16 as i32;
+                u.mouse_y = ((lp >> 16) & 0xFFFF) as i16 as i32;
+                0
+            }
+            // `টিক`-চালিত পোলিং-এর জন্য — টেক্সট ইনপুট উইজেটে টাইপ করার
+            // জন্য `WM_CHAR` আলাদাভাবে নিচে হ্যান্ডল হয়, দুটো ভিন্ন বার্তা।
+            WM_KEYDOWN => {
+                let vk = wp as usize;
+                if vk < 256 {
+                    let u = ui();
+                    // অটো-রিপিট দমন: `keys_down` ইতিমধ্যে true থাকলে এটা
+                    // চেপে-ধরে-রাখা থেকে আসা পুনরাবৃত্ত `WM_KEYDOWN`, নতুন
+                    // "just pressed" প্রান্ত নয়।
+                    if !u.keys_down[vk] {
+                        u.keys_pressed[vk] = true;
+                    }
+                    u.keys_down[vk] = true;
+                }
+                0
+            }
+            WM_KEYUP => {
+                let vk = wp as usize;
+                if vk < 256 {
+                    ui().keys_down[vk] = false;
+                }
+                0
+            }
             WM_CHAR => {
                 let c = wp as u16;
                 let u = ui();
@@ -1024,6 +1208,15 @@ pub(crate) mod imp {
                         if let Some(t) = ui().tick_fn {
                             t();
                         }
+                        // হ্যান্ডলার চলে যাওয়ার *পরে* রিসেট — এই প্রান্তগুলো
+                        // ঠিক এই `টিক`-এর হ্যান্ডলারকে দেখানোর জন্যই সেট করা
+                        // হয়েছিল (আগের `টিক`-এর পর থেকে জমা হওয়া বার্তা
+                        // থেকে); হ্যান্ডলার চলার *আগে* রিসেট করলে সে নিজের
+                        // দেখার সুযোগ পাওয়ার আগেই মুছে যেত। পরের `টিক`-এর
+                        // জন্য জমা শুরু হয় এখান থেকে।
+                        let u = ui();
+                        u.keys_pressed = [false; 256];
+                        u.mouse_pressed = [false; 3];
                         if let Some(rb) = ui().on_rebuild {
                             rb();
                             InvalidateRect(h, std::ptr::null(), 1);
@@ -1054,6 +1247,35 @@ pub(crate) mod imp {
                             InvalidateRect(h, std::ptr::null(), 1);
                             let ms = env_ms("KLOM_UI_AUTOCLOSE_MS").map(|v| v / 3).unwrap_or(400).max(60);
                             SetTimer(h, TIMER_CLICKS, ms, None);
+                            return 0;
+                        }
+                        PostQuitMessage(0);
+                        0
+                    }
+                    TIMER_INPUT => {
+                        if let Some(step) = next_scripted_input() {
+                            match step {
+                                InputStep::Key(vk) => {
+                                    PostMessageW(h, WM_KEYDOWN, vk as usize, 0);
+                                    PostMessageW(h, WM_KEYUP, vk as usize, 0);
+                                }
+                                InputStep::Mouse(x, y, btn) => {
+                                    let lp_pos = ((x & 0xFFFF) | ((y & 0xFFFF) << 16)) as isize;
+                                    PostMessageW(h, WM_MOUSEMOVE, 0, lp_pos);
+                                    let pair = match btn {
+                                        0 => Some((WM_LBUTTONDOWN, WM_LBUTTONUP)),
+                                        1 => Some((WM_RBUTTONDOWN, WM_RBUTTONUP)),
+                                        2 => Some((WM_MBUTTONDOWN, WM_MBUTTONUP)),
+                                        _ => None,
+                                    };
+                                    if let Some((down, up)) = pair {
+                                        PostMessageW(h, down, 0, lp_pos);
+                                        PostMessageW(h, up, 0, lp_pos);
+                                    }
+                                }
+                            }
+                            let ms = env_ms("KLOM_UI_AUTOCLOSE_MS").map(|v| v / 3).unwrap_or(200).max(60);
+                            SetTimer(h, TIMER_INPUT, ms, None);
                             return 0;
                         }
                         PostQuitMessage(0);
@@ -1117,6 +1339,15 @@ pub(crate) mod imp {
                     u.click_script = sc.split(',').filter_map(|p| p.trim().parse::<i32>().ok()).collect();
                     u.click_pos = 0;
                     SetTimer(hwnd, TIMER_CLICKS, 300, None);
+                    return;
+                }
+            }
+            if let Ok(si) = std::env::var("KLOM_UI_SCRIPT_INPUT") {
+                if !si.trim().is_empty() {
+                    let u = ui();
+                    u.input_script = parse_input_script(&si);
+                    u.input_script_pos = 0;
+                    SetTimer(hwnd, TIMER_INPUT, 150, None);
                     return;
                 }
             }
@@ -1200,4 +1431,10 @@ mod imp {
     stub!(kl_g_fillsector(a: i64, b: i64, c: i64, d: i64, e: i64));
     stub!(kl_g_text(x: i64, y: i64, s: *mut u8));
     stub!(kl_g_font(s: *mut u8, size: i64));
+    stub!(kl_input_key_down(vk: i64) -> i8 = 0);
+    stub!(kl_input_key_pressed(vk: i64) -> i8 = 0);
+    stub!(kl_input_mouse_x() -> i64 = 0);
+    stub!(kl_input_mouse_y() -> i64 = 0);
+    stub!(kl_input_mouse_down(btn: i64) -> i8 = 0);
+    stub!(kl_input_mouse_pressed(btn: i64) -> i8 = 0);
 }
