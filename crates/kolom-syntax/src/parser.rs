@@ -1165,6 +1165,25 @@ impl P {
     fn parse_type_base(&mut self) -> TypeExpr {
         let pos = self.pos();
         match self.kind().cloned() {
+            Some(TokenKind::Op("(")) => {
+                self.bump();
+                let mut params = Vec::new();
+                if !self.at_op(")") {
+                    loop {
+                        params.push(self.parse_type());
+                        if !self.eat_op(",") {
+                            break;
+                        }
+                    }
+                }
+                self.expect_op(")");
+                if !self.at_op("->") {
+                    self.diag_here("'->' প্রত্যাশিত — ফাংশন-টাইপে রিটার্ন টাইপ আবশ্যক".to_string());
+                }
+                self.eat_op("->");
+                let ret = self.parse_type();
+                TypeExpr::Func(params, Box::new(ret))
+            }
             Some(TokenKind::Kw(k)) if k == "ম্যাপ" => {
                 self.bump();
                 if !self.expect_op("[") {

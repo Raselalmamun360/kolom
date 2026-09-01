@@ -18,6 +18,8 @@ pub enum TypeExpr {
     Array(Box<TypeExpr>),
     Shared(Box<TypeExpr>),
     Map(Box<TypeExpr>, Box<TypeExpr>),
+    /// `(টাইপ, ...) -> টাইপ` — a function value's type.
+    Func(Vec<TypeExpr>, Box<TypeExpr>),
 }
 
 #[derive(Debug, Clone)]

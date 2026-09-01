@@ -39,6 +39,10 @@ pub enum Value {
     /// shape, so there is no way to recover which one is live from the
     /// payload alone.
     Enum(Rc<RefCell<(String, Vec<Value>)>>),
+    /// A named top-level `ফাংশন` used as a value (assigned to a variable,
+    /// passed as an argument, called indirectly). Not a closure — it
+    /// captures nothing; it is a reference to an already-declared function.
+    Func(Rc<FuncDecl>),
 }
 
 impl std::fmt::Display for Value {
@@ -62,6 +66,7 @@ impl std::fmt::Display for Value {
                 write!(f, "]")
             }
             Value::Shared(s) => write!(f, "{}", s.borrow()),
+            Value::Func(fd) => write!(f, "<ফাংশন {}>", fd.name.name),
             Value::Enum(e) => {
                 let (tag, payload) = &*e.borrow();
                 write!(f, "{}", tag)?;
@@ -459,9 +464,13 @@ impl<'o> Interp<'o> {
                     Value::Arr(Rc::new(RefCell::new(vals)))
                 }
             }),
-            ExprKind::Ident(id) => self
-                .lookup(&id.name)
-                .ok_or_else(|| err(id.pos, format!("অঘোষিত ভ্যারিয়েবল '{}'", id.name))),
+            ExprKind::Ident(id) => match self.lookup(&id.name) {
+                Some(v) => Ok(v),
+                None => match self.funcs.get(&id.name) {
+                    Some(f) => Ok(Value::Func(Rc::clone(f))),
+                    None => Err(err(id.pos, format!("অঘোষিত ভ্যারিয়েবল '{}'", id.name))),
+                },
+            },
             ExprKind::Qualified { module, name } => {
                 // Check if module is actually a local struct variable → field access
                 if let Some(v) = self.lookup(&module.name) {
@@ -606,7 +615,14 @@ impl<'o> Interp<'o> {
                                     return Err(err(*cpos, "এটি কলযোগ্য ফাংশন নয়"))
                                 }
                             };
-                            val = Some(self.call(&nm, npos, args)?);
+                            // A local variable holding a function value
+                            // shadows a same-named top-level ফাংশন — this is
+                            // the indirect-call path for first-class
+                            // function values (`ধরি f = বর্গ; f(৫)`).
+                            val = Some(match self.lookup(&nm) {
+                                Some(Value::Func(f)) => self.call_func_decl(&f, &nm, npos, args)?,
+                                _ => self.call(&nm, npos, args)?,
+                            });
                         }
                         Suffix::Index(ix, ipos) => {
                             let cur = match val.take() {
@@ -1976,12 +1992,28 @@ impl<'o> Interp<'o> {
             Some(f) => Rc::clone(f),
             None => return Err(err(pos, format!("অজানা ফাংশন '{}'", name))),
         };
+        self.call_func_decl(&f, &f.name.name, pos, args)
+    }
+
+    /// Runs a call against an already-resolved `FuncDecl` — shared by
+    /// `call_named_fn` (direct calls, resolved by name) and indirect calls
+    /// through a `Value::Func` held in a variable (`f(args)` where `f` is a
+    /// local binding, not a top-level name). `label` is only for error
+    /// messages — an indirect call has no source-level name to blame the
+    /// arity mismatch on other than the variable it came through.
+    fn call_func_decl(
+        &mut self,
+        f: &Rc<FuncDecl>,
+        label: &str,
+        pos: Pos,
+        args: &[Expr],
+    ) -> Result<Value, InterpError> {
         if f.params.len() != args.len() {
             return Err(err(
                 pos,
                 format!(
                     "'{}' {}টি প্যারামিটার নেয়, {}টি পেয়েছে",
-                    name,
+                    label,
                     bn_num(f.params.len() as u32),
                     bn_num(args.len() as u32)
                 ),

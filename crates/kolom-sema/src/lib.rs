@@ -323,6 +323,10 @@ pub enum Ty {
     Map(Box<Ty>, Box<Ty>),
     Struct(String),
     Enum(String),
+    /// A function value's type — `(param types...) -> return type`. Held by
+    /// a variable/param/field typed with the `(টাইপ, ...) -> টাইপ` syntax,
+    /// or synthesized for a bare reference to a declared `ফাংশন`'s name.
+    Func(Vec<Ty>, Box<Ty>),
     Unknown,
     Err,
 }
@@ -341,6 +345,16 @@ impl std::fmt::Display for Ty {
             Ty::Map(k, v) => write!(f, "ম্যাম[{}, {}]", k, v),
             Ty::Struct(name) => write!(f, "{}", name),
             Ty::Enum(name) => write!(f, "{}", name),
+            Ty::Func(params, ret) => {
+                write!(f, "(")?;
+                for (i, p) in params.iter().enumerate() {
+                    if i > 0 {
+                        write!(f, ", ")?;
+                    }
+                    write!(f, "{}", p)?;
+                }
+                write!(f, ") -> {}", ret)
+            }
             Ty::Unknown => write!(f, "অজানা"),
             Ty::Err => write!(f, "ত্রুটি"),
         }
@@ -607,6 +621,10 @@ impl Ck {
                 }
                 Ty::Map(Box::new(kt), Box::new(self.resolve_type(v)))
             }
+            TypeExpr::Func(params, ret) => Ty::Func(
+                params.iter().map(|p| self.resolve_type(p)).collect(),
+                Box::new(self.resolve_type(ret)),
+            ),
         }
     }
 
@@ -1335,11 +1353,17 @@ impl Ck {
                     "লেখো" | "দৈর্ঘ্য" | "কপি" | "শেয়ার_করো" | "মান" | "বসাও" | "লেখায়" | "সাজাও"
                         | "সংখ্যায়" | "দশমিকে"
                         | "ম্যাপ_তৈরি" | "চাবি_গুলো" | "আছে_কি" | "চাবি_মুছো" | "পড়ো_লাইন"
-                ) || self.funcs.contains_key(&id.name)
-                    || self.structs.contains_key(&id.name)
+                ) || self.structs.contains_key(&id.name)
                     || self.variant_to_enum.contains_key(&id.name)
                 {
                     return Some(Ty::Unknown);
+                }
+                // A bare reference to a declared `ফাংশন`'s name (not
+                // immediately called — a direct call `বর্গ(৫)` parses as
+                // `ExprKind::Postfix`, never reaching this arm) is a
+                // first-class function value.
+                if let Some(sig) = self.funcs.get(&id.name) {
+                    return Some(Ty::Func(sig.params.clone(), Box::new(sig.ret.clone())));
                 }
                 let info = match self.lookup(&id.name) {
                     None => None,
@@ -1600,7 +1624,19 @@ impl Ck {
                                     continue;
                                 }
                             };
-                            cur = self.call(&name, *cpos, args);
+                            // A local variable holding a function value
+                            // shadows a same-named top-level ফাংশন — see
+                            // `call_indirect`.
+                            let indirect = self.lookup(&name).and_then(|b| match &b.ty {
+                                Ty::Func(params, ret) => Some((params.clone(), (**ret).clone())),
+                                _ => None,
+                            });
+                            cur = match indirect {
+                                Some((params, ret)) => {
+                                    self.call_indirect(&name, &params, ret, *cpos, args)
+                                }
+                                None => self.call(&name, *cpos, args),
+                            };
                         }
                         Suffix::Field(fname) => {
                             let field_ty = match &cur {
@@ -2211,29 +2247,44 @@ impl Ck {
                 return Ty::Err;
             }
         };
-        if sig.params.len() != args.len() {
+        self.check_call_args(name, &sig.params, sig.ret, pos, args)
+    }
+
+    /// Indirect call through a local variable of `Ty::Func` type (`ধরি f =
+    /// বর্গ; f(৫)`) — same arity/type checking as `call_named_fn`, just
+    /// against a signature read off the variable's type instead of looked
+    /// up by name in `self.funcs`.
+    fn call_indirect(&mut self, label: &str, params: &[Ty], ret: Ty, pos: Pos, args: &[Expr]) -> Ty {
+        self.check_call_args(label, params, ret, pos, args)
+    }
+
+    /// Shared arity/per-argument-type checking for a call against a known
+    /// signature. `label` is only for error messages — for an indirect call
+    /// it names the variable the call went through, not a declared function.
+    fn check_call_args(&mut self, label: &str, params: &[Ty], ret: Ty, pos: Pos, args: &[Expr]) -> Ty {
+        if params.len() != args.len() {
             self.err(
                 pos,
                 format!(
                     "'{}' {}টি প্যারামিটার নেয়, {}টি পেয়েছে",
-                    name,
-                    bn_num(sig.params.len() as u32),
+                    label,
+                    bn_num(params.len() as u32),
                     bn_num(args.len() as u32)
                 ),
             );
             for a in args {
                 let _ = self.expr(a);
             }
-            return sig.ret;
+            return ret;
         }
-        for (i, (pt, a)) in sig.params.iter().zip(args.iter()).enumerate() {
+        for (i, (pt, a)) in params.iter().zip(args.iter()).enumerate() {
             let at = self.expr(a).unwrap_or(Ty::Unknown);
             if !unify(pt, &at) {
                 self.err(
                     a.pos,
                     format!(
                         "'{}'-এর আর্গুমেন্ট #{} টাইপ অমিল — '{}' প্রত্যাশিত, '{}' পাওয়া গেছে",
-                        name,
+                        label,
                         bn_num((i + 1) as u32),
                         pt,
                         at
@@ -2241,7 +2292,7 @@ impl Ck {
                 );
             }
         }
-        sig.ret
+        ret
     }
 
     /// `পরম_মান`, `চিহ্ন`, `সর্বনিম্ন`, `সর্বোচ্চ` and `সীমাবদ্ধ` accept

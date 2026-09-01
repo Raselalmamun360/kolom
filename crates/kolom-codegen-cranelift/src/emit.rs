@@ -210,6 +210,17 @@ fn resolve_type(te: &TypeExpr) -> Ty {
         TypeExpr::Array(inner) => Ty::Arr(Box::new(resolve_type(inner))),
         TypeExpr::Shared(inner) => Ty::Shared(Box::new(resolve_type(inner))),
         TypeExpr::Map(k, v) => Ty::Map(Box::new(resolve_type(k)), Box::new(resolve_type(v))),
+        // First-class function values are interpreter-only for now (see
+        // kolom-interp's `Value::Func`) — a program that reaches this type
+        // in native codegen fails gracefully at the point of use (`ধরি f =
+        // বর্গ` lowers a bare Ident that isn't a local var, which
+        // `lower_expr`'s `ExprKind::Ident` arm already rejects with "অজানা
+        // ভ্যারিয়েবল") rather than here; this arm exists only so the match
+        // stays exhaustive.
+        TypeExpr::Func(params, ret) => Ty::Func(
+            params.iter().map(resolve_type).collect(),
+            Box::new(resolve_type(ret)),
+        ),
     }
 }
 
