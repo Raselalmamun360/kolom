@@ -20,6 +20,9 @@ pub enum TypeExpr {
     Map(Box<TypeExpr>, Box<TypeExpr>),
     /// `(টাইপ, ...) -> টাইপ` — a function value's type.
     Func(Vec<TypeExpr>, Box<TypeExpr>),
+    /// `Name<Arg, ...>` — a generic `তথ্য`/`এনাম` instantiated with concrete
+    /// type arguments, e.g. `বাক্স<সংখ্যা>`.
+    Generic(Ident, Vec<TypeExpr>),
 }
 
 #[derive(Debug, Clone)]
@@ -31,6 +34,8 @@ pub struct Param {
 #[derive(Debug, Clone)]
 pub struct FuncDecl {
     pub name: Ident,
+    /// `<T, ...>` — empty for an ordinary (non-generic) function.
+    pub type_params: Vec<Ident>,
     pub params: Vec<Param>,
     pub ret: TypeExpr,
     pub body: Block,
@@ -228,6 +233,8 @@ pub struct Expr {
 #[derive(Debug, Clone)]
 pub struct StructDecl {
     pub name: Ident,
+    /// `<T, ...>` — empty for an ordinary (non-generic) struct.
+    pub type_params: Vec<Ident>,
     pub fields: Vec<(Ident, TypeExpr)>,
 }
 
@@ -236,6 +243,8 @@ pub struct StructDecl {
 #[derive(Debug, Clone)]
 pub struct EnumDecl {
     pub name: Ident,
+    /// `<T, ...>` — empty for an ordinary (non-generic) enum.
+    pub type_params: Vec<Ident>,
     pub variants: Vec<(Ident, Vec<TypeExpr>)>,
 }
 

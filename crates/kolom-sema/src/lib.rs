@@ -369,8 +369,30 @@ fn poisoned(t: &Ty) -> bool {
     matches!(t, Ty::Err | Ty::Unknown)
 }
 
+/// `Ty::Unknown`/`Ty::Err` unify with anything, *including nested inside a
+/// compound type* — `Arr(Unknown)` unifies with `Arr(সংখ্যা)`, not just bare
+/// `Unknown` with anything. This is what makes generics work: a generic
+/// তথ্য/ফাংশন's own type parameters resolve to `Ty::Unknown` wherever they
+/// appear (see `resolve_type`), so e.g. `T[]` becomes `Arr(Unknown)` — a
+/// call site's real argument type (`সংখ্যা[]`, `Arr(Num)`) needs to unify
+/// with that structurally, not just at the top level. A strictly-conservative
+/// superset of the old `a == b || poisoned(a) || poisoned(b)`: every pair
+/// that unified before still does (via the `_ => a == b` fallthrough), this
+/// only adds new unifying pairs, so no previously-accepted program is
+/// rejected by this change.
 fn unify(a: &Ty, b: &Ty) -> bool {
-    a == b || poisoned(a) || poisoned(b)
+    if poisoned(a) || poisoned(b) {
+        return true;
+    }
+    match (a, b) {
+        (Ty::Arr(x), Ty::Arr(y)) => unify(x, y),
+        (Ty::Shared(x), Ty::Shared(y)) => unify(x, y),
+        (Ty::Map(k1, v1), Ty::Map(k2, v2)) => unify(k1, k2) && unify(v1, v2),
+        (Ty::Func(p1, r1), Ty::Func(p2, r2)) => {
+            p1.len() == p2.len() && p1.iter().zip(p2).all(|(x, y)| unify(x, y)) && unify(r1, r2)
+        }
+        _ => a == b,
+    }
 }
 
 #[derive(Debug, Clone)]
@@ -432,6 +454,16 @@ struct Ck {
     /// `আকৃতি::বৃত্ত(...)`), so a variant name must be unique across every
     /// এনাম in the program — this map is also what makes that lookup O(1).
     variant_to_enum: HashMap<String, String>,
+    /// তথ্য/এনাম name -> its declared `<T, ...>` arity, for checking
+    /// `Name<Arg, ...>` type-position instantiations. Only generic
+    /// (non-empty type-param list) types are present.
+    struct_type_params: HashMap<String, usize>,
+    enum_type_params: HashMap<String, usize>,
+    /// While resolving a generic তথ্য/এনাম/ফাংশন's *own* declaration (fields,
+    /// variant payloads, params/return), the names of its `<T, ...>` type
+    /// parameters — `resolve_type` erases any of these to `Ty::Unknown`.
+    /// Empty outside such a declaration.
+    type_params_in_scope: std::collections::HashSet<String>,
     /// Imports that name one of the user's own `.ক` files rather than a
     /// standard-library module. Their contents are merged into this program
     /// before analysis, so the module name itself is never a value — which
@@ -457,6 +489,9 @@ pub fn analyze_typed(prog: &Program) -> (Vec<Diagnostic>, Types) {
         enums: HashMap::new(),
         enum_names: std::collections::HashSet::new(),
         variant_to_enum: HashMap::new(),
+        struct_type_params: HashMap::new(),
+        enum_type_params: HashMap::new(),
+        type_params_in_scope: std::collections::HashSet::new(),
         user_imports: std::collections::HashSet::new(),
     };
     ck.check_program(prog);
@@ -588,27 +623,40 @@ impl Ck {
 
     fn resolve_type(&mut self, te: &TypeExpr) -> Ty {
         match te {
-            TypeExpr::Named(id) => match id.name.as_str() {
-                "সংখ্যা" => Ty::Num,
-                "দশমিক" => Ty::Dec,
-                "লেখা" => Ty::Txt,
-                "বুলিয়ান" => Ty::Bool,
-                "অক্ষর" => Ty::Ch,
-                "ফাঁকা" => Ty::Null,
-                other => {
-                    if self.struct_names.contains(other) {
-                        Ty::Struct(other.to_string())
-                    } else if self.enum_names.contains(other) {
-                        Ty::Enum(other.to_string())
-                    } else {
-                        self.err(
-                            id.pos,
-                            format!("'{}' অজানা টাইপ — প্রিমিটিভ টাইপ বা ঘোষিত 'তথ্য'/'এনাম' ব্যবহার করুন", other),
-                        );
-                        Ty::Err
+            TypeExpr::Named(id) => {
+                // A type parameter (`T` inside a generic `তথ্য`/`এনাম`/
+                // `ফাংশন`'s own declaration) erases to `Ty::Unknown` —
+                // Kolom's generics are type-erased, not monomorphized: the
+                // declaration is checked once, opaquely, and only a call/
+                // construction *site* checks concrete argument types
+                // against it (see `infer_type_args`). Checked before the
+                // primitive/struct/enum names below so a type parameter
+                // can shadow one (unlikely in practice, but unambiguous).
+                if self.type_params_in_scope.contains(&id.name) {
+                    return Ty::Unknown;
+                }
+                match id.name.as_str() {
+                    "সংখ্যা" => Ty::Num,
+                    "দশমিক" => Ty::Dec,
+                    "লেখা" => Ty::Txt,
+                    "বুলিয়ান" => Ty::Bool,
+                    "অক্ষর" => Ty::Ch,
+                    "ফাঁকা" => Ty::Null,
+                    other => {
+                        if self.struct_names.contains(other) {
+                            Ty::Struct(other.to_string())
+                        } else if self.enum_names.contains(other) {
+                            Ty::Enum(other.to_string())
+                        } else {
+                            self.err(
+                                id.pos,
+                                format!("'{}' অজানা টাইপ — প্রিমিটিভ টাইপ বা ঘোষিত 'তথ্য'/'এনাম' ব্যবহার করুন", other),
+                            );
+                            Ty::Err
+                        }
                     }
                 }
-            },
+            }
             TypeExpr::Array(inner) => Ty::Arr(Box::new(self.resolve_type(inner))),
             TypeExpr::Shared(inner) => Ty::Shared(Box::new(self.resolve_type(inner))),
             TypeExpr::Map(k, v) => {
@@ -625,6 +673,50 @@ impl Ck {
                 params.iter().map(|p| self.resolve_type(p)).collect(),
                 Box::new(self.resolve_type(ret)),
             ),
+            // `Name<Arg, ...>` — a generic তথ্য/এনাম instantiated with
+            // concrete type arguments. Type-erased (see above), so this
+            // resolves to the *base* তথ্য/এনাম — `বাক্স<সংখ্যা>` and
+            // `বাক্স<লেখা>` are both just `Ty::Struct("বাক্স")`. The
+            // arguments are still resolved (for their own diagnostics —
+            // an unknown type inside `<...>` should still be reported) and
+            // checked for arity, then discarded.
+            TypeExpr::Generic(id, args) => {
+                for a in args {
+                    let _ = self.resolve_type(a);
+                }
+                let arity = self
+                    .struct_type_params
+                    .get(&id.name)
+                    .or_else(|| self.enum_type_params.get(&id.name))
+                    .copied();
+                match arity {
+                    Some(n) if n != args.len() => {
+                        self.err(
+                            id.pos,
+                            format!(
+                                "'{}' {}টি টাইপ-প্যারামিটার নেয়, {}টি দেওয়া হয়েছে",
+                                id.name,
+                                bn_num(n as u32),
+                                bn_num(args.len() as u32)
+                            ),
+                        );
+                    }
+                    Some(_) => {}
+                    None => {
+                        self.err(
+                            id.pos,
+                            format!("'{}' কোনো জেনেরিক 'তথ্য'/'এনাম' নয়", id.name),
+                        );
+                    }
+                }
+                if self.struct_names.contains(&id.name) {
+                    Ty::Struct(id.name.clone())
+                } else if self.enum_names.contains(&id.name) {
+                    Ty::Enum(id.name.clone())
+                } else {
+                    Ty::Err
+                }
+            }
         }
     }
 
@@ -664,14 +756,20 @@ impl Ck {
         // pointer-like `শেয়ার`/array field).
         for s in &prog.structs {
             self.struct_names.insert(s.name.name.clone());
+            self.struct_type_params.insert(s.name.name.clone(), s.type_params.len());
         }
-        // Pass 2: resolve field types now that all names are known.
+        // Pass 2: resolve field types now that all names are known. A
+        // generic তথ্য's own type parameters are in scope only while its
+        // fields are resolved (`resolve_type` erases them to `Ty::Unknown`)
+        // — see `type_params_in_scope`.
         for s in &prog.structs {
+            self.type_params_in_scope = s.type_params.iter().map(|p| p.name.clone()).collect();
             let fields: Vec<(String, Ty)> = s
                 .fields
                 .iter()
                 .map(|(n, t)| (n.name.clone(), self.resolve_type(t)))
                 .collect();
+            self.type_params_in_scope.clear();
             if self.structs.insert(s.name.name.clone(), fields).is_some() {
                 self.err(
                     s.name.pos,
@@ -682,8 +780,10 @@ impl Ck {
         // এনাম: same two-pass forward-reference trick as তথ্য above.
         for e in &prog.enums {
             self.enum_names.insert(e.name.name.clone());
+            self.enum_type_params.insert(e.name.name.clone(), e.type_params.len());
         }
         for e in &prog.enums {
+            self.type_params_in_scope = e.type_params.iter().map(|p| p.name.clone()).collect();
             let variants: Vec<(String, Vec<Ty>)> = e
                 .variants
                 .iter()
@@ -694,6 +794,7 @@ impl Ck {
                     )
                 })
                 .collect();
+            self.type_params_in_scope.clear();
             for (vname, vpos) in e.variants.iter().map(|(vn, _)| (vn.name.clone(), vn.pos)) {
                 if self.struct_names.contains(&vname) {
                     self.err(
@@ -724,10 +825,12 @@ impl Ck {
         }
         self.check_type_cycles(prog);
         for f in &prog.funcs {
+            self.type_params_in_scope = f.type_params.iter().map(|p| p.name.clone()).collect();
             let sig = FnSig {
                 params: f.params.iter().map(|p| self.resolve_type(&p.ty)).collect(),
                 ret: self.resolve_type(&f.ret),
             };
+            self.type_params_in_scope.clear();
             if self.funcs.insert(f.name.name.clone(), sig).is_some() {
                 self.err(
                     f.name.pos,
@@ -880,6 +983,12 @@ impl Ck {
     }
 
     fn check_fn(&mut self, f: &FuncDecl) {
+        // A generic ফাংশন's type parameters stay in scope for its whole
+        // body, not just its signature — `resolve_type` erases them to
+        // `Ty::Unknown` wherever they appear (`ধরি x: T = ...` inside the
+        // body included). The body is checked exactly once, opaquely, not
+        // re-checked per call site — see `resolve_type`'s doc comment.
+        self.type_params_in_scope = f.type_params.iter().map(|p| p.name.clone()).collect();
         self.scopes.push(HashMap::new());
         let params: Vec<(String, Ty)> = f
             .params
@@ -912,6 +1021,7 @@ impl Ck {
         }
         self.cur_ret = None;
         self.scopes.pop();
+        self.type_params_in_scope.clear();
     }
 
     fn check_block(&mut self, b: &Block) {

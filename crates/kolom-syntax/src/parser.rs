@@ -286,9 +286,33 @@ impl P {
         Block { stmts }
     }
 
+    /// Optional `<T, ...>` right after a `তথ্য`/`এনাম`/`ফাংশন` name — empty
+    /// `Vec` (not an error) when there is no `<` at all, since generics are
+    /// opt-in.
+    fn parse_type_params(&mut self) -> Vec<Ident> {
+        let mut params = Vec::new();
+        if !self.eat_op("<") {
+            return params;
+        }
+        if !self.at_op(">") {
+            loop {
+                match self.expect_ident("টাইপ-প্যারামিটারের নাম") {
+                    Some(p) => params.push(p),
+                    None => break,
+                }
+                if !self.eat_op(",") {
+                    break;
+                }
+            }
+        }
+        self.expect_op(">");
+        params
+    }
+
     fn parse_struct_decl(&mut self) -> Option<StructDecl> {
         self.bump();
         let name = self.expect_ident("'তথ্য'-এর পরে নাম")?;
+        let type_params = self.parse_type_params();
         if !self.expect_op("{") {
             return None;
         }
@@ -318,12 +342,13 @@ impl P {
                 }
             }
         }
-        Some(StructDecl { name, fields })
+        Some(StructDecl { name, type_params, fields })
     }
 
     fn parse_enum_decl(&mut self) -> Option<EnumDecl> {
         self.bump();
         let name = self.expect_ident("'এনাম'-এর পরে নাম")?;
+        let type_params = self.parse_type_params();
         if !self.expect_op("{") {
             return None;
         }
@@ -360,7 +385,7 @@ impl P {
                 }
             }
         }
-        Some(EnumDecl { name, variants })
+        Some(EnumDecl { name, type_params, variants })
     }
 
     fn parse_fn(&mut self) -> FuncDecl {
@@ -371,6 +396,7 @@ impl P {
                 name: "ত্রুটি".to_string(),
                 pos: self.pos(),
             });
+        let type_params = self.parse_type_params();
         let mut params = Vec::new();
         if self.expect_op("(") {
             if !self.at_op(")") {
@@ -400,6 +426,7 @@ impl P {
         self.fn_depth -= 1;
         FuncDecl {
             name,
+            type_params,
             params,
             ret,
             body,
@@ -1203,6 +1230,20 @@ impl P {
             }
             Some(TokenKind::Ident(name)) => {
                 self.bump();
+                if self.at_op("<") {
+                    self.bump();
+                    let mut args = Vec::new();
+                    if !self.at_op(">") {
+                        loop {
+                            args.push(self.parse_type());
+                            if !self.eat_op(",") {
+                                break;
+                            }
+                        }
+                    }
+                    self.expect_op(">");
+                    return TypeExpr::Generic(Ident { name, pos }, args);
+                }
                 TypeExpr::Named(Ident { name, pos })
             }
             _ => {

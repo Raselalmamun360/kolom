@@ -221,6 +221,13 @@ fn resolve_type(te: &TypeExpr) -> Ty {
             params.iter().map(resolve_type).collect(),
             Box::new(resolve_type(ret)),
         ),
+        // Generics are type-erased (see kolom-sema's `resolve_type` doc
+        // comment) — `বাক্স<সংখ্যা>` is just the base `তথ্য`/`এনাম` "বাক্স".
+        // A generic type parameter's own occurrences (`T` inside the
+        // declaration) resolve as an ordinary unrecognized name here —
+        // `Ty::Struct("T")` — which fails gracefully ("অজানা struct 'T'")
+        // at the point layout is actually needed, same as এনাম/ফাংশন-টাইপ.
+        TypeExpr::Generic(id, _) => Ty::Struct(id.name.clone()),
     }
 }
 
