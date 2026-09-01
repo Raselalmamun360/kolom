@@ -33,6 +33,12 @@ pub enum Value {
     Arr(Rc<RefCell<Vec<Value>>>),
     Shared(Rc<RefCell<Value>>),
     Map(Rc<RefCell<HashMap<String, Value>>>),
+    /// এনাম value: (active variant name, its payload values). Unlike
+    /// `তথ্য` (represented as `Value::Map`, keyed by field name), an এনাম
+    /// needs an actual discriminant — two variants may share a payload
+    /// shape, so there is no way to recover which one is live from the
+    /// payload alone.
+    Enum(Rc<RefCell<(String, Vec<Value>)>>),
 }
 
 impl std::fmt::Display for Value {
@@ -56,6 +62,21 @@ impl std::fmt::Display for Value {
                 write!(f, "]")
             }
             Value::Shared(s) => write!(f, "{}", s.borrow()),
+            Value::Enum(e) => {
+                let (tag, payload) = &*e.borrow();
+                write!(f, "{}", tag)?;
+                if !payload.is_empty() {
+                    write!(f, "(")?;
+                    for (i, v) in payload.iter().enumerate() {
+                        if i > 0 {
+                            write!(f, ", ")?;
+                        }
+                        write!(f, "{}", v)?;
+                    }
+                    write!(f, ")")?;
+                }
+                Ok(())
+            }
             Value::Map(m) => {
                 write!(f, "{{")?;
                 let v = m.borrow();
@@ -122,6 +143,11 @@ struct Interp<'o> {
     net: HashMap<u32, std::net::TcpStream>,
     net_next: u32,
     structs: HashMap<String, Vec<String>>,
+    /// Variant name -> payload arity. Sema has already checked arity/types
+    /// against the owning এনাম's declaration, so at this layer a variant is
+    /// just "a name that constructs a tagged value" — no need to track
+    /// which এনাম it belongs to.
+    variants: HashMap<String, usize>,
     argv: Vec<String>,
 }
 
@@ -160,11 +186,17 @@ pub fn run_with_io(
         net: HashMap::new(),
         net_next: 1,
         structs: HashMap::new(),
+        variants: HashMap::new(),
         argv,
     };
     for s in &prog.structs {
         let field_names: Vec<String> = s.fields.iter().map(|(n, _)| n.name.clone()).collect();
         it.structs.insert(s.name.name.clone(), field_names);
+    }
+    for en in &prog.enums {
+        for (vname, payload) in &en.variants {
+            it.variants.insert(vname.name.clone(), payload.len());
+        }
     }
     for f in &prog.funcs {
         if it
@@ -631,7 +663,38 @@ impl<'o> Interp<'o> {
                 }
                 Ok(val.unwrap_or(Value::Null))
             }
+            ExprKind::Match(m) => self.eval_match(m),
         }
+    }
+
+    /// `মিলাও scrutinee { pattern => body, ... }`. Sema has already checked
+    /// exhaustiveness and arm-type agreement, so at this layer it is just:
+    /// find the first arm whose pattern matches the scrutinee's tag (or the
+    /// first wildcard), bind its payload, evaluate its body.
+    fn eval_match(&mut self, m: &MatchExpr) -> Result<Value, InterpError> {
+        let scrutinee = self.eval(&m.scrutinee)?;
+        let (tag, payload) = match &scrutinee {
+            Value::Enum(e) => e.borrow().clone(),
+            _ => return Err(err(m.pos, "'মিলাও'-এর স্ক্রুটিনি একটি এনাম মান হতে হবে")),
+        };
+        for arm in &m.arms {
+            match &arm.pattern {
+                Pattern::Wildcard(_) => {
+                    return self.eval(&arm.body);
+                }
+                Pattern::Variant { name, binds, .. } if name.name == tag => {
+                    self.scopes.push(Scope::new());
+                    for (bind, v) in binds.iter().zip(payload.iter()) {
+                        self.define(&bind.name, v.clone(), false, bind.pos)?;
+                    }
+                    let result = self.eval(&arm.body);
+                    self.scopes.pop();
+                    return result;
+                }
+                Pattern::Variant { .. } => {}
+            }
+        }
+        Err(err(m.pos, format!("'{}' ভ্যারিয়েন্টের জন্য কোনো শাখা মেলেনি", tag)))
     }
 
     fn binary(&mut self, op: BinOp, l: Value, r: Value, pos: Pos) -> Result<Value, InterpError> {
@@ -1842,6 +1905,13 @@ impl<'o> Interp<'o> {
                 }
             }
             return Ok(Value::Map(Rc::new(RefCell::new(m))));
+        }
+        if self.variants.contains_key(name) {
+            let mut payload = Vec::with_capacity(args.len());
+            for a in args {
+                payload.push(self.eval(a)?);
+            }
+            return Ok(Value::Enum(Rc::new(RefCell::new((name.to_string(), payload)))));
         }
         if name == "চাবি_গুলো" {
             if args.len() != 1 {

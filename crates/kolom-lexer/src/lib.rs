@@ -50,6 +50,8 @@ pub const KEYWORDS: &[&str] = &[
     // void type name, so it is deliberately listed once and used in both roles.
     "ম্যাপ",
     "তথ্য",
+    "এনাম",
+    "মিলাও",
     "চেষ্টা",
     "ধরো",
 ];
@@ -551,6 +553,7 @@ impl Lx {
             ('<', Some('=')) => Some("<="),
             ('>', Some('=')) => Some(">="),
             ('-', Some('>')) => Some("->"),
+            ('=', Some('>')) => Some("=>"),
             ('+', Some('=')) => Some("+="),
             ('-', Some('=')) => Some("-="),
             ('*', Some('=')) => Some("*="),

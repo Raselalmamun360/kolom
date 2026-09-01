@@ -322,6 +322,7 @@ pub enum Ty {
     Shared(Box<Ty>),
     Map(Box<Ty>, Box<Ty>),
     Struct(String),
+    Enum(String),
     Unknown,
     Err,
 }
@@ -339,6 +340,7 @@ impl std::fmt::Display for Ty {
             Ty::Shared(t) => write!(f, "শেয়ার {}", t),
             Ty::Map(k, v) => write!(f, "ম্যাম[{}, {}]", k, v),
             Ty::Struct(name) => write!(f, "{}", name),
+            Ty::Enum(name) => write!(f, "{}", name),
             Ty::Unknown => write!(f, "অজানা"),
             Ty::Err => write!(f, "ত্রুটি"),
         }
@@ -405,6 +407,17 @@ struct Ck {
     /// Names of all declared `তথ্য` types, collected before any field type
     /// is resolved so a struct may reference one declared later in the file.
     struct_names: std::collections::HashSet<String>,
+    /// এনাম name -> ordered (variant_name, positional payload types).
+    enums: HashMap<String, Vec<(String, Vec<Ty>)>>,
+    /// Names of all declared `এনাম` types, collected before any variant
+    /// payload type is resolved — same forward-reference trick as
+    /// `struct_names`.
+    enum_names: std::collections::HashSet<String>,
+    /// Variant name -> owning এনাম name. Kolom has a flat, unqualified
+    /// namespace for constructor calls (`বৃত্ত(...)`, not
+    /// `আকৃতি::বৃত্ত(...)`), so a variant name must be unique across every
+    /// এনাম in the program — this map is also what makes that lookup O(1).
+    variant_to_enum: HashMap<String, String>,
     /// Imports that name one of the user's own `.ক` files rather than a
     /// standard-library module. Their contents are merged into this program
     /// before analysis, so the module name itself is never a value — which
@@ -427,6 +440,9 @@ pub fn analyze_typed(prog: &Program) -> (Vec<Diagnostic>, Types) {
         imports: std::collections::HashSet::new(),
         structs: HashMap::new(),
         struct_names: std::collections::HashSet::new(),
+        enums: HashMap::new(),
+        enum_names: std::collections::HashSet::new(),
+        variant_to_enum: HashMap::new(),
         user_imports: std::collections::HashSet::new(),
     };
     ck.check_program(prog);
@@ -471,13 +487,29 @@ impl Ck {
         fields.iter().find(|(n, _)| n == field).map(|(_, t)| t.clone())
     }
 
-    /// Rejects structs that contain themselves *by value*, directly or
-    /// through a chain of struct fields — such a type would need infinite
-    /// space. Reaching itself through a `শেয়ার`, array, or map field is
-    /// fine: those are pointers, which is exactly how recursive data
-    /// structures (lists, trees, ASTs) are built.
-    fn check_struct_cycles(&mut self, prog: &Program) {
+    /// Rejects structs/enums that contain themselves *by value*, directly or
+    /// through a chain of struct fields / enum variant payloads — such a
+    /// type would need infinite space. Reaching itself through a `শেয়ার`,
+    /// array, or map field is fine: those are pointers, which is exactly how
+    /// recursive data structures (lists, trees, ASTs) are built. Struct and
+    /// enum names share this one checker because a cycle can cross between
+    /// the two (a struct field of enum type whose variant holds that struct,
+    /// etc).
+    fn check_type_cycles(&mut self, prog: &Program) {
         for decl in &prog.structs {
+            let start = &decl.name.name;
+            let mut seen = std::collections::HashSet::new();
+            if let Some(path) = self.value_cycle_from(start, start, &mut seen) {
+                self.err(
+                    decl.name.pos,
+                    format!(
+                        "'{}' নিজেকেই ধারণ করছে ({}) — অসীম আকার।                          পুনরাবৃত্ত গঠনের জন্য 'শেয়ার {}' বা '{}[]' ব্যবহার করুন",
+                        start, path, start, start
+                    ),
+                );
+            }
+        }
+        for decl in &prog.enums {
             let start = &decl.name.name;
             let mut seen = std::collections::HashSet::new();
             if let Some(path) = self.value_cycle_from(start, start, &mut seen) {
@@ -492,8 +524,29 @@ impl Ck {
         }
     }
 
+    /// The inline (by-value) members of a struct or এনাম type, as
+    /// (label, member_type) pairs — struct fields as-is, or synthesized
+    /// `variant#index` labels for each এনাম variant's payload slots. Lets
+    /// `value_cycle_from` walk either kind (and cross between them)
+    /// uniformly from just the bare type name.
+    fn inline_members(&self, type_name: &str) -> Option<Vec<(String, Ty)>> {
+        if let Some(fields) = self.structs.get(type_name) {
+            return Some(fields.clone());
+        }
+        if let Some(variants) = self.enums.get(type_name) {
+            let mut out = Vec::new();
+            for (vname, payload) in variants {
+                for (i, ty) in payload.iter().enumerate() {
+                    out.push((format!("{}#{}", vname, i), ty.clone()));
+                }
+            }
+            return Some(out);
+        }
+        None
+    }
+
     /// Depth-first search for a by-value path from `current` back to `start`.
-    /// Returns the field path that closes the cycle, for the error message.
+    /// Returns the member path that closes the cycle, for the error message.
     fn value_cycle_from(
         &self,
         start: &str,
@@ -503,16 +556,16 @@ impl Ck {
         if !seen.insert(current.to_string()) {
             return None;
         }
-        let fields = self.structs.get(current)?.clone();
-        for (fname, fty) in fields {
-            // Only Struct fields are stored inline; Shared/Arr/Map are
+        let members = self.inline_members(current)?;
+        for (mname, mty) in members {
+            // Only Struct/Enum members are stored inline; Shared/Arr/Map are
             // pointers and therefore break the size recursion.
-            if let Ty::Struct(next) = fty {
+            if let Ty::Struct(next) | Ty::Enum(next) = mty {
                 if next == start {
-                    return Some(format!("{}.{}", current, fname));
+                    return Some(format!("{}.{}", current, mname));
                 }
                 if let Some(rest) = self.value_cycle_from(start, &next, seen) {
-                    return Some(format!("{}.{} -> {}", current, fname, rest));
+                    return Some(format!("{}.{} -> {}", current, mname, rest));
                 }
             }
         }
@@ -531,10 +584,12 @@ impl Ck {
                 other => {
                     if self.struct_names.contains(other) {
                         Ty::Struct(other.to_string())
+                    } else if self.enum_names.contains(other) {
+                        Ty::Enum(other.to_string())
                     } else {
                         self.err(
                             id.pos,
-                            format!("'{}' অজানা টাইপ — প্রিমিটিভ টাইপ বা ঘোষিত 'তথ্য' ব্যবহার করুন", other),
+                            format!("'{}' অজানা টাইপ — প্রিমিটিভ টাইপ বা ঘোষিত 'তথ্য'/'এনাম' ব্যবহার করুন", other),
                         );
                         Ty::Err
                     }
@@ -606,7 +661,50 @@ impl Ck {
                 );
             }
         }
-        self.check_struct_cycles(prog);
+        // এনাম: same two-pass forward-reference trick as তথ্য above.
+        for e in &prog.enums {
+            self.enum_names.insert(e.name.name.clone());
+        }
+        for e in &prog.enums {
+            let variants: Vec<(String, Vec<Ty>)> = e
+                .variants
+                .iter()
+                .map(|(vn, payload)| {
+                    (
+                        vn.name.clone(),
+                        payload.iter().map(|t| self.resolve_type(t)).collect(),
+                    )
+                })
+                .collect();
+            for (vname, vpos) in e.variants.iter().map(|(vn, _)| (vn.name.clone(), vn.pos)) {
+                if self.struct_names.contains(&vname) {
+                    self.err(
+                        vpos,
+                        format!("ভ্যারিয়েন্ট '{}' একটি 'তথ্য'-এর নামের সাথে সংঘর্ষ করছে", vname),
+                    );
+                }
+                if let Some(prev_enum) = self.variant_to_enum.insert(vname.clone(), e.name.name.clone()) {
+                    if prev_enum != e.name.name {
+                        self.err(
+                            vpos,
+                            format!(
+                                "ভ্যারিয়েন্ট '{}' একাধিক এনামে ব্যবহৃত ('{}' ও '{}') — নাম-সংঘর্ষ",
+                                vname, prev_enum, e.name.name
+                            ),
+                        );
+                    } else {
+                        self.err(vpos, format!("'{}'-এ দুটি ভ্যারিয়েন্টের একই নাম", e.name.name));
+                    }
+                }
+            }
+            if self.enums.insert(e.name.name.clone(), variants).is_some() {
+                self.err(
+                    e.name.pos,
+                    format!("দুটি এনামের একই নাম — '{}'", e.name.name),
+                );
+            }
+        }
+        self.check_type_cycles(prog);
         for f in &prog.funcs {
             let sig = FnSig {
                 params: f.params.iter().map(|p| self.resolve_type(&p.ty)).collect(),
@@ -1237,7 +1335,9 @@ impl Ck {
                     "লেখো" | "দৈর্ঘ্য" | "কপি" | "শেয়ার_করো" | "মান" | "বসাও" | "লেখায়" | "সাজাও"
                         | "সংখ্যায়" | "দশমিকে"
                         | "ম্যাপ_তৈরি" | "চাবি_গুলো" | "আছে_কি" | "চাবি_মুছো" | "পড়ো_লাইন"
-                ) || self.funcs.contains_key(&id.name) || self.structs.contains_key(&id.name)
+                ) || self.funcs.contains_key(&id.name)
+                    || self.structs.contains_key(&id.name)
+                    || self.variant_to_enum.contains_key(&id.name)
                 {
                     return Some(Ty::Unknown);
                 }
@@ -1428,7 +1528,9 @@ impl Ck {
                                         | "আছে_কি"
                                         | "চাবি_মুছো"
                                         | "পড়ো_লাইন"
-                                ) && !self.funcs.contains_key(&id.name) && !self.structs.contains_key(&id.name)
+                                ) && !self.funcs.contains_key(&id.name)
+                                    && !self.structs.contains_key(&id.name)
+                                    && !self.variant_to_enum.contains_key(&id.name)
                                 {
                                     self.err(
                                         id.pos,
@@ -1567,7 +1669,160 @@ impl Ck {
                 }
                 cur
             }
+            ExprKind::Match(m) => self.check_match(m),
         })
+    }
+
+    /// `মিলাও scrutinee { pattern => body, ... }` as an expression: every arm
+    /// must agree on a result type (like `যদি`, but value-producing), and —
+    /// unlike `যদি` — coverage of the scrutinee's এনাম variants is checked
+    /// (a `_` wildcard arm satisfies it for whatever variants remain).
+    fn check_match(&mut self, m: &MatchExpr) -> Ty {
+        let st = self.expr(&m.scrutinee).unwrap_or(Ty::Unknown);
+        let ename = match &st {
+            Ty::Enum(n) => Some(n.clone()),
+            Ty::Unknown | Ty::Err => None,
+            other => {
+                self.err(
+                    m.pos,
+                    format!(
+                        "'মিলাও'-এর স্ক্রুটিনি একটি 'এনাম' টাইপের হতে হবে, পেয়েছে '{}'",
+                        other
+                    ),
+                );
+                None
+            }
+        };
+        let variants: Vec<(String, Vec<Ty>)> = ename
+            .as_ref()
+            .and_then(|n| self.enums.get(n).cloned())
+            .unwrap_or_default();
+
+        let pre = self.snapshot();
+        let mut covered: std::collections::HashSet<String> = std::collections::HashSet::new();
+        let mut has_wildcard = false;
+        let mut result: Option<Ty> = None;
+        let mut arm_snapshots: Vec<Vec<HashMap<String, Binding>>> = Vec::new();
+
+        if m.arms.is_empty() {
+            self.err(m.pos, "'মিলাও'-এ অন্তত একটি শাখা থাকতে হবে".to_string());
+        }
+
+        for arm in &m.arms {
+            self.restore(pre.clone());
+            self.scopes.push(HashMap::new());
+            match &arm.pattern {
+                Pattern::Wildcard(_) => {
+                    has_wildcard = true;
+                }
+                Pattern::Variant { name, binds, pos } => {
+                    if !covered.insert(name.name.clone()) {
+                        self.err(
+                            *pos,
+                            format!("'{}' প্যাটার্ন একাধিকবার — অপ্রয়োজনীয় শাখা", name.name),
+                        );
+                    }
+                    match variants.iter().find(|(vn, _)| vn == &name.name) {
+                        Some((_, payload)) => {
+                            if payload.len() != binds.len() {
+                                self.err(
+                                    *pos,
+                                    format!(
+                                        "'{}' প্যাটার্নে {}টি বাইন্ডিং দরকার, {}টি দেওয়া হয়েছে",
+                                        name.name,
+                                        bn_num(payload.len() as u32),
+                                        bn_num(binds.len() as u32)
+                                    ),
+                                );
+                            }
+                            for (bind, ty) in binds.iter().zip(payload.iter()) {
+                                self.define_var(bind, ty.clone(), false);
+                                self.types
+                                    .decl
+                                    .insert(bind as *const Ident as usize, ty.clone());
+                            }
+                        }
+                        None => {
+                            if ename.is_some() {
+                                self.err(
+                                    *pos,
+                                    format!("'{}' নামে কোনো ভ্যারিয়েন্ট নেই", name.name),
+                                );
+                            }
+                        }
+                    }
+                }
+            }
+            let at = self.expr(&arm.body).unwrap_or(Ty::Unknown);
+            match &result {
+                None => result = Some(at),
+                Some(prev) => {
+                    if !unify(prev, &at) {
+                        self.err(
+                            arm.body.pos,
+                            format!(
+                                "'মিলাও'-এর সব শাখা একই টাইপ ফেরত দিতে হবে — '{}' প্রত্যাশিত, '{}' পাওয়া গেছে",
+                                prev, at
+                            ),
+                        );
+                    }
+                }
+            }
+            self.scopes.pop();
+            arm_snapshots.push(self.snapshot());
+        }
+
+        if !has_wildcard {
+            let missing: Vec<&str> = variants
+                .iter()
+                .map(|(vn, _)| vn.as_str())
+                .filter(|vn| !covered.contains(*vn))
+                .collect();
+            if !missing.is_empty() {
+                self.err(
+                    m.pos,
+                    format!(
+                        "'মিলাও' সব ভ্যারিয়েন্ট কভার করে না — বাকি: {} (অথবা '_' শাখা যোগ করুন)",
+                        missing.join(", ")
+                    ),
+                );
+            }
+        }
+
+        self.restore(pre.clone());
+        if !arm_snapshots.is_empty() {
+            self.merge_match_arms(&pre, &arm_snapshots);
+        }
+        result.unwrap_or(Ty::Unknown)
+    }
+
+    /// N-ary generalization of `merge_branches` for `মিলাও`'s arms: a
+    /// binding ends up `moved` if it was moved in *any* arm — the same
+    /// conservative union `যদি`/`নাহলে` uses for two branches.
+    fn merge_match_arms(
+        &mut self,
+        base: &[HashMap<String, Binding>],
+        arms: &[Vec<HashMap<String, Binding>>],
+    ) {
+        for (ia, base_scope) in base.iter().enumerate() {
+            let names: Vec<String> = base_scope.keys().cloned().collect();
+            for name in names {
+                let moved_by = arms.iter().find_map(|snap| {
+                    snap.get(ia)
+                        .and_then(|s| s.get(&name))
+                        .filter(|b| b.moved)
+                        .map(|b| b.moved_by.clone())
+                });
+                if let Some(mb) = moved_by {
+                    if let Some(live_scope) = self.scopes.get_mut(ia) {
+                        if let Some(lb) = live_scope.get_mut(&name) {
+                            lb.moved = true;
+                            lb.moved_by = mb;
+                        }
+                    }
+                }
+            }
+        }
     }
 
     fn binary(&mut self, op: BinOp, lt: Ty, rt: Ty, pos: Pos) -> Ty {
@@ -1692,6 +1947,44 @@ impl Ck {
                 }
             }
             return Ty::Struct(name.to_string());
+        }
+        // এনাম variant constructor: বৃত্ত(args...) where বৃত্ত is a declared
+        // variant. Unlike a struct, the result type is the *owning এনাম*,
+        // not the variant itself — there is no per-variant type.
+        if let Some(ename) = self.variant_to_enum.get(name).cloned() {
+            let payload: Vec<Ty> = self.enums[&ename]
+                .iter()
+                .find(|(vn, _)| vn == name)
+                .map(|(_, p)| p.clone())
+                .unwrap_or_default();
+            if payload.len() != args.len() {
+                self.err(
+                    pos,
+                    format!(
+                        "'{}' ভ্যারিয়েন্টে {}টি পেলোড আছে, {}টি আর্গুমেন্ট দেওয়া হয়েছে",
+                        name,
+                        bn_num(payload.len() as u32),
+                        bn_num(args.len() as u32)
+                    ),
+                );
+                return Ty::Enum(ename);
+            }
+            for (i, (pty, a)) in payload.iter().zip(args.iter()).enumerate() {
+                let at = self.expr(a).unwrap_or(Ty::Unknown);
+                if !unify(pty, &at) {
+                    self.err(
+                        a.pos,
+                        format!(
+                            "'{}'-এর আর্গুমেন্ট #{} টাইপ অমিল — '{}' প্রত্যাশিত, '{}' পাওয়া গেছে",
+                            name,
+                            bn_num((i + 1) as u32),
+                            pty,
+                            at
+                        ),
+                    );
+                }
+            }
+            return Ty::Enum(ename);
         }
         if let Some((module, item)) = name.split_once("::") {
             return self.call_stdlib(module, item, pos, args);

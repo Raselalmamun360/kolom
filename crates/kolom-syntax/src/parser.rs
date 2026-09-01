@@ -191,6 +191,7 @@ impl P {
         let mut prog = Program {
             imports: Vec::new(),
             structs: Vec::new(),
+            enums: Vec::new(),
             funcs: Vec::new(),
             consts: Vec::new(),
             app: None,
@@ -218,6 +219,11 @@ impl P {
             } else if self.at_kw("তথ্য") {
                 if let Some(s) = self.parse_struct_decl() {
                     prog.structs.push(s);
+                }
+                self.skip_nl();
+            } else if self.at_kw("এনাম") {
+                if let Some(e) = self.parse_enum_decl() {
+                    prog.enums.push(e);
                 }
                 self.skip_nl();
             } else if self.at_kw("ফাংশন") {
@@ -313,6 +319,48 @@ impl P {
             }
         }
         Some(StructDecl { name, fields })
+    }
+
+    fn parse_enum_decl(&mut self) -> Option<EnumDecl> {
+        self.bump();
+        let name = self.expect_ident("'এনাম'-এর পরে নাম")?;
+        if !self.expect_op("{") {
+            return None;
+        }
+        let mut variants = Vec::new();
+        loop {
+            self.skip_nl();
+            if self.at_op("}") {
+                self.bump();
+                break;
+            }
+            if self.at_eof() {
+                self.diag_here("এনাম বন্ধ হয়নি — '}' পাওয়া যায়নি".to_string());
+                break;
+            }
+            let vname = self.expect_ident("ভ্যারিয়েন্টের নাম")?;
+            let mut payload = Vec::new();
+            if self.eat_op("(") {
+                if !self.at_op(")") {
+                    loop {
+                        payload.push(self.parse_type());
+                        if !self.eat_op(",") {
+                            break;
+                        }
+                    }
+                }
+                self.expect_op(")");
+            }
+            variants.push((vname, payload));
+            if !self.eat_op(",") {
+                self.skip_nl();
+                if self.at_op("}") {
+                    self.bump();
+                    break;
+                }
+            }
+        }
+        Some(EnumDecl { name, variants })
     }
 
     fn parse_fn(&mut self) -> FuncDecl {
@@ -613,7 +661,7 @@ impl P {
             | Some(TokenKind::Num(_))
             | Some(TokenKind::Str(_))
             | Some(TokenKind::Chr(_)) => true,
-            Some(TokenKind::Kw(k)) => matches!(*k, "সত্য" | "মিথ্যা" | "ফাঁকা" | "না"),
+            Some(TokenKind::Kw(k)) => matches!(*k, "সত্য" | "মিথ্যা" | "ফাঁকা" | "না" | "মিলাও"),
             Some(TokenKind::Op(o)) => matches!(*o, "(" | "[" | "-"),
             _ => false,
         }
@@ -971,6 +1019,7 @@ impl P {
                 }
                 self.lit(Lit::Null, pos)
             }
+            Some(TokenKind::Kw("মিলাও")) => self.parse_match_expr(),
             Some(TokenKind::Op("(")) => {
                 self.bump();
                 let e = self.parse_expr();
@@ -997,6 +1046,91 @@ impl P {
                     self.bump();
                 }
                 self.lit(Lit::Null, pos)
+            }
+        }
+    }
+
+    fn parse_match_expr(&mut self) -> Expr {
+        let pos = self.pos();
+        self.bump();
+        let scrutinee = Box::new(self.parse_expr());
+        if !self.expect_op("{") {
+            return Expr {
+                kind: ExprKind::Match(MatchExpr {
+                    pos,
+                    scrutinee,
+                    arms: Vec::new(),
+                }),
+                pos,
+            };
+        }
+        let mut arms = Vec::new();
+        loop {
+            self.skip_nl();
+            if self.at_op("}") {
+                self.bump();
+                break;
+            }
+            if self.at_eof() {
+                self.diag_here("'মিলাও' বন্ধ হয়নি — '}' পাওয়া যায়নি".to_string());
+                break;
+            }
+            let pattern = self.parse_pattern();
+            if !self.expect_op("=>") {
+                break;
+            }
+            let body = self.parse_expr();
+            arms.push(MatchArm { pattern, body });
+            if !self.eat_op(",") {
+                self.skip_nl();
+                if self.at_op("}") {
+                    self.bump();
+                    break;
+                }
+            }
+        }
+        Expr {
+            kind: ExprKind::Match(MatchExpr { pos, scrutinee, arms }),
+            pos,
+        }
+    }
+
+    fn parse_pattern(&mut self) -> Pattern {
+        let pos = self.pos();
+        match self.kind().cloned() {
+            Some(TokenKind::Ident(name)) if name == "_" => {
+                self.bump();
+                Pattern::Wildcard(pos)
+            }
+            Some(TokenKind::Ident(name)) => {
+                self.bump();
+                let mut binds = Vec::new();
+                if self.eat_op("(") {
+                    if !self.at_op(")") {
+                        loop {
+                            match self.expect_ident("প্যাটার্নে বাইন্ডিং নাম") {
+                                Some(b) => binds.push(b),
+                                None => break,
+                            }
+                            if !self.eat_op(",") {
+                                break;
+                            }
+                        }
+                    }
+                    self.expect_op(")");
+                }
+                Pattern::Variant {
+                    name: Ident { name, pos },
+                    binds,
+                    pos,
+                }
+            }
+            _ => {
+                self.diag_here("প্যাটার্ন প্রত্যাশিত — ভ্যারিয়েন্টের নাম বা '_'".to_string());
+                if !self.at_eof() {
+                    self.bump();
+                }
+                Pattern::Wildcard(pos)
             }
         }
     }
@@ -1069,6 +1203,7 @@ pub fn parse(tokens: Vec<Token>) -> (Program, Vec<Diagnostic>) {
             Program {
                 imports: Vec::new(),
                 structs: Vec::new(),
+                enums: Vec::new(),
                 funcs: Vec::new(),
                 consts: Vec::new(),
                 app: None,

@@ -1358,6 +1358,13 @@ impl Gen {
                 Err("M2 codegen: module-qualified কল (স্ট্যান্ডার্ড লাইব্রেরি) এখনো সমর্থিত নয়".into())
             }
             ExprKind::FieldAssign(base_id, fld, rhs) => self.lower_field_assign(b, base_id, fld, rhs, env),
+            // `এনাম`/`মিলাও` are interpreter-only for now (see
+            // kolom-interp's `Value::Enum`/`eval_match`) — native codegen
+            // (tagged-union layout, tag-switch lowering, discriminant-aware
+            // drop) is tracked separately in docs/v2-prerequisites.md.
+            ExprKind::Match(_) => Err(
+                "'মিলাও' এখনো নেটিভ কম্পাইলে (কলম বিল্ড) সমর্থিত নয় — আপাতত 'কলম চালাও' ব্যবহার করুন".into(),
+            ),
         }
     }
 

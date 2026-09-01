@@ -188,6 +188,33 @@ pub enum ExprKind {
     Binary(BinOp, Box<Expr>, Box<Expr>),
     Assign(LValue, Box<Expr>),
     FieldAssign(Ident, Ident, Box<Expr>),
+    Match(MatchExpr),
+}
+
+/// A `মিলাও` arm's pattern. `Variant` binds the scrutinee's payload (if any)
+/// into fresh names visible only inside `body`; `Wildcard` (`_`) matches
+/// anything and is not itself checked for exhaustiveness (it *provides* it).
+#[derive(Debug, Clone)]
+pub enum Pattern {
+    Variant {
+        name: Ident,
+        binds: Vec<Ident>,
+        pos: Pos,
+    },
+    Wildcard(Pos),
+}
+
+#[derive(Debug, Clone)]
+pub struct MatchArm {
+    pub pattern: Pattern,
+    pub body: Expr,
+}
+
+#[derive(Debug, Clone)]
+pub struct MatchExpr {
+    pub pos: Pos,
+    pub scrutinee: Box<Expr>,
+    pub arms: Vec<MatchArm>,
 }
 
 #[derive(Debug, Clone)]
@@ -202,6 +229,14 @@ pub struct StructDecl {
     pub fields: Vec<(Ident, TypeExpr)>,
 }
 
+/// A variant's payload is a positional list of types (Rust
+/// tuple-variant-style) — `বৃত্ত(দশমিক)` — never named fields.
+#[derive(Debug, Clone)]
+pub struct EnumDecl {
+    pub name: Ident,
+    pub variants: Vec<(Ident, Vec<TypeExpr>)>,
+}
+
 #[derive(Debug, Clone)]
 pub struct TryCatchStmt {
     pub body: Block,
@@ -213,6 +248,7 @@ pub struct TryCatchStmt {
 pub struct Program {
     pub imports: Vec<Ident>,
     pub structs: Vec<StructDecl>,
+    pub enums: Vec<EnumDecl>,
     pub funcs: Vec<Rc<FuncDecl>>,
     pub consts: Vec<ConstDecl>,
     pub app: Option<AppDecl>,
