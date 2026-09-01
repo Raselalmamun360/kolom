@@ -358,7 +358,15 @@ fn run_in_place(buf: &Buffer, dir: Option<&Path>) -> std::io::Result<()> {
     execute!(stdout(), cursor::Show, terminal::LeaveAlternateScreen)?;
     terminal::disable_raw_mode()?;
     println!();
-    match build_program(&buf.text(), dir) {
+    // `build_program` + `kolom_interp::run` both run on a dedicated
+    // deep-stack thread (see `run_on_deep_stack` in main.rs) — the
+    // interpreter's plain recursive-descent evaluator overflows the
+    // default stack at a surprisingly shallow depth otherwise. `Program`
+    // holds `Rc`s (not `Send`), so it has to be built *inside* the
+    // closure, never passed in — hence owning `text`/`dir` here first.
+    let text = buf.text();
+    let dir = dir.map(|p| p.to_path_buf());
+    crate::run_on_deep_stack(move || match build_program(&text, dir.as_deref()) {
         Ok(prog) => {
             let stdout_h = std::io::stdout();
             let mut lock = stdout_h.lock();
@@ -371,7 +379,7 @@ fn run_in_place(buf: &Buffer, dir: Option<&Path>) -> std::io::Result<()> {
                 println!("{}:{}: {}", d.line, d.col, d.message);
             }
         }
-    }
+    });
     println!("\n[যেকোনো কী চাপুন পাতায় ফিরে যেতে...]");
     std::io::stdout().flush()?;
     loop {

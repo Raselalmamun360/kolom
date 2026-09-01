@@ -121,25 +121,55 @@ fn display_file_name(file: &str) -> String {
         .unwrap_or_else(|| file.to_string())
 }
 
-fn cmd_run(path: Option<&String>, extra_args: &[String]) -> ExitCode {
-    let (prog, _file, name) = match check_program(path) {
-        Ok(x) => x,
-        Err(c) => return c,
-    };
+/// A recursive Kolom program (recursive functions, or a recursive এনাম
+/// walked through `মিলাও`) overflows the default OS thread stack at a
+/// surprisingly shallow depth — a few hundred frames in a release build,
+/// far fewer in debug — because `kolom_interp`'s evaluator is a plain
+/// recursive-descent walk with no depth limiting of its own. That is a
+/// crash (undefined behavior on stack overflow, not a catchable panic), so
+/// every plain interpreter invocation runs on a dedicated thread with a
+/// much larger stack instead of the default. `Program` holds `Rc`s (not
+/// `Send`), so `f` must build and consume it entirely inside its own
+/// closure rather than one being passed in from the calling thread — see
+/// the callers below.
+///
+/// Not applied to `কলম কনসোল`'s interpreter call (`kolom-runtime/src/
+/// console.rs`) — that one runs intentionally on the UI thread so
+/// `পড়ো_লাইন` can pump window messages inline, a harder constraint this
+/// helper does not attempt to satisfy.
+pub(crate) fn run_on_deep_stack<T: Send + 'static>(f: impl FnOnce() -> T + Send + 'static) -> T {
+    const STACK_SIZE: usize = 512 * 1024 * 1024;
+    std::thread::Builder::new()
+        .stack_size(STACK_SIZE)
+        .spawn(f)
+        .expect("ইন্টারপ্রেটার থ্রেড শুরু করা যায়নি")
+        .join()
+        .unwrap_or_else(|e| std::panic::resume_unwind(e))
+}
 
-    let stdout = std::io::stdout();
-    let mut lock = stdout.lock();
-    match kolom_interp::run_with_argv(&prog, &mut lock, extra_args.to_vec()) {
-        Ok(()) => ExitCode::SUCCESS,
-        Err(e) => {
-            let _ = writeln!(
-                std::io::stderr(),
-                "{}",
-                format_error("রানটাইম ত্রুটি", &name, e.line, e.col, &e.message)
-            );
-            ExitCode::FAILURE
+fn cmd_run(path: Option<&String>, extra_args: &[String]) -> ExitCode {
+    let path = path.cloned();
+    let extra_args = extra_args.to_vec();
+    run_on_deep_stack(move || {
+        let (prog, _file, name) = match check_program(path.as_ref()) {
+            Ok(x) => x,
+            Err(c) => return c,
+        };
+
+        let stdout = std::io::stdout();
+        let mut lock = stdout.lock();
+        match kolom_interp::run_with_argv(&prog, &mut lock, extra_args) {
+            Ok(()) => ExitCode::SUCCESS,
+            Err(e) => {
+                let _ = writeln!(
+                    std::io::stderr(),
+                    "{}",
+                    format_error("রানটাইম ত্রুটি", &name, e.line, e.col, &e.message)
+                );
+                ExitCode::FAILURE
+            }
         }
-    }
+    })
 }
 
 /// As `cmd_run`, but shows output in a native `কলম কনসোল` window instead of

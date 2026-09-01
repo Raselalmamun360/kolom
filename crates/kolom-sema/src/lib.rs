@@ -1900,6 +1900,18 @@ impl Ck {
         for arm in &m.arms {
             self.restore(pre.clone());
             self.scopes.push(HashMap::new());
+            // A `_` arm matches everything, so any arm after it — another
+            // `_` or a variant pattern alike — can never run. Silently
+            // accepting it would let a typo (a variant pattern placed after
+            // `_` by mistake) look like it does something when it never
+            // fires.
+            let arm_pos = match &arm.pattern {
+                Pattern::Wildcard(p) => *p,
+                Pattern::Variant { pos, .. } => *pos,
+            };
+            if has_wildcard {
+                self.err(arm_pos, "'_'-এর পরের এই শাখা কখনো পৌঁছাবে না — '_' ইতিমধ্যে বাকি সব ধরেছে".to_string());
+            }
             match &arm.pattern {
                 Pattern::Wildcard(_) => {
                     has_wildcard = true;

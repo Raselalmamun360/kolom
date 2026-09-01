@@ -150,7 +150,21 @@ fn console_examples_agree_between_backends() {
         let exe = String::from_utf8_lossy(&build.stdout).trim().to_string();
         let native_out = Command::new(&exe).current_dir(&native_dir).output().unwrap();
 
-        let norm = |b: &[u8]| String::from_utf8_lossy(b).replace("\r\n", "\n");
+        // `09_গ্রেড_বিশ্লেষক` prints `সময়.বর্তমান_তারিখ_লেখা()` — the current
+        // wall-clock second. The interpreted and native runs launch as two
+        // separate subprocesses (the native one paying for a full build+link
+        // round trip first), so the two calls can straddle a second
+        // boundary and legitimately disagree by a second — not a backend
+        // divergence. Blank out any `তারিখ:` line before comparing rather
+        // than comparing the literal timestamp.
+        let norm = |b: &[u8]| {
+            String::from_utf8_lossy(b)
+                .replace("\r\n", "\n")
+                .lines()
+                .map(|l| if l.starts_with("তারিখ:") { "তারিখ: <সময়>" } else { l })
+                .collect::<Vec<_>>()
+                .join("\n")
+        };
         let (a, c) = (norm(&interp_out.stdout), norm(&native_out.stdout));
         if a != c {
             mismatches.push(format!("{name}:\n  interpreted: {a:?}\n  native:      {c:?}"));
