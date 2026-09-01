@@ -464,6 +464,11 @@ struct Ck {
     /// parameters — `resolve_type` erases any of these to `Ty::Unknown`.
     /// Empty outside such a declaration.
     type_params_in_scope: std::collections::HashSet<String>,
+    /// Names registered from an `এক্সটার্ন` block — otherwise indistinguishable
+    /// from an ordinary ফাংশন in `self.funcs` (same signature checking), this
+    /// is only consulted for diagnostics that need to say *which* kind a
+    /// name is.
+    extern_funcs: std::collections::HashSet<String>,
     /// Imports that name one of the user's own `.ক` files rather than a
     /// standard-library module. Their contents are merged into this program
     /// before analysis, so the module name itself is never a value — which
@@ -492,6 +497,7 @@ pub fn analyze_typed(prog: &Program) -> (Vec<Diagnostic>, Types) {
         struct_type_params: HashMap::new(),
         enum_type_params: HashMap::new(),
         type_params_in_scope: std::collections::HashSet::new(),
+        extern_funcs: std::collections::HashSet::new(),
         user_imports: std::collections::HashSet::new(),
     };
     ck.check_program(prog);
@@ -838,6 +844,34 @@ impl Ck {
                 );
             }
         }
+        // এক্সটার্ন ফাংশন — signature-only, no body, registered into the
+        // same `self.funcs`/namespace as ordinary ফাংশন so call sites need
+        // no special-casing at all (arity/type checking is identical). Not
+        // generic — a type parameter on a native-linked signature has no
+        // meaning here.
+        for eb in &prog.externs {
+            if eb.abi != "C" {
+                self.err(
+                    eb.pos,
+                    format!("'{}' অজানা ABI — শুধু \"C\" সমর্থিত", eb.abi),
+                );
+            }
+            for ef in &eb.funcs {
+                let sig = FnSig {
+                    params: ef.params.iter().map(|p| self.resolve_type(&p.ty)).collect(),
+                    ret: self.resolve_type(&ef.ret),
+                };
+                if self.funcs.contains_key(&ef.name.name) {
+                    self.err(
+                        ef.name.pos,
+                        format!("'{}' নামে আগেই একটি ফাংশন ঘোষিত", ef.name.name),
+                    );
+                    continue;
+                }
+                self.extern_funcs.insert(ef.name.name.clone());
+                self.funcs.insert(ef.name.name.clone(), sig);
+            }
+        }
         for f in &prog.funcs {
             let sig = self.funcs.get(&f.name.name).unwrap();
             let entry = (
@@ -845,6 +879,15 @@ impl Ck {
                 sig.ret.clone(),
             );
             self.types.funcs.insert(f.name.name.clone(), entry);
+        }
+        for eb in &prog.externs {
+            for ef in &eb.funcs {
+                if let Some(sig) = self.funcs.get(&ef.name.name) {
+                    self.types
+                        .funcs
+                        .insert(ef.name.name.clone(), (sig.params.clone(), sig.ret.clone()));
+                }
+            }
         }
         for c in &prog.consts {
             let ty = self.resolve_type(&c.ty);

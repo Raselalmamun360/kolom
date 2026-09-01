@@ -1,0 +1,8 @@
+এক্সটার্ন "C" {
+    ফাংশন kl_math_factorial(সংখ্যা n) -> সংখ্যা
+}
+
+অ্যাপ {
+    লেখো(লেখায়(kl_math_factorial(৫)))
+    লেখো(লেখায়(kl_math_factorial(৭)))
+}

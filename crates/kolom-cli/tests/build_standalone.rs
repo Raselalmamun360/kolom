@@ -188,6 +188,20 @@ fn build_arrays_without_any_c_compiler() {
     assert_fixture_matches_reference("07_arrays");
 }
 
+/// `54_extern_ffi` calls a real kolom-runtime symbol (already statically
+/// linked into every native Kolom binary) through a user-written `এক্সটার্ন
+/// "C"` block — proving the declaration actually resolves and links, not
+/// just parses/type-checks. Not `assert_fixture_matches_reference`: এক্সটার্ন
+/// calls are native-only (the interpreter errors on purpose — see
+/// `crates/kolom-cli/tests/golden/54_extern_ffi/expected.txt`), so this
+/// fixture's two `expected.txt`-shaped answers genuinely differ by backend.
+#[test]
+fn build_extern_ffi_links_and_calls_real_symbol() {
+    let got = build_and_run(&fixture_dir("54_extern_ffi").join("main.ক"));
+    let norm = |s: &str| s.replace("\r\n", "\n");
+    assert_eq!(norm(&got), "120\n5040\n", "kl_math_factorial via এক্সটার্ন did not link/call correctly");
+}
+
 /// Sanity check on the test's own premise: if a C compiler were still
 /// reachable through the scrubbed PATH, the tests above would prove nothing.
 #[test]

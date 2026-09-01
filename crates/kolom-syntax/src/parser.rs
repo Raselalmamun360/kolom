@@ -193,6 +193,7 @@ impl P {
             structs: Vec::new(),
             enums: Vec::new(),
             funcs: Vec::new(),
+            externs: Vec::new(),
             consts: Vec::new(),
             app: None,
         };
@@ -229,6 +230,11 @@ impl P {
             } else if self.at_kw("ফাংশন") {
                 let f = self.parse_fn();
                 prog.funcs.push(Rc::new(f));
+                self.skip_nl();
+            } else if self.at_kw("এক্সটার্ন") {
+                if let Some(eb) = self.parse_extern_block() {
+                    prog.externs.push(eb);
+                }
                 self.skip_nl();
             } else if self.at_kw("ধ্রুবক") {
                 self.bump();
@@ -431,6 +437,71 @@ impl P {
             ret,
             body,
         }
+    }
+
+    /// `এক্সটার্ন "C" { ফাংশন name(টাইপ প্যারাম, ...) -> টাইপ ... }` — each
+    /// entry is a signature only, no body (`{`/block never appears after
+    /// the return type).
+    fn parse_extern_block(&mut self) -> Option<ExternBlock> {
+        let pos = self.pos();
+        self.bump();
+        let abi = match self.kind().cloned() {
+            Some(TokenKind::Str(s)) => {
+                self.bump();
+                s
+            }
+            _ => {
+                self.diag_here("'এক্সটার্ন'-এর পরে ABI-লেখা প্রত্যাশিত, যেমন \"C\"".to_string());
+                String::new()
+            }
+        };
+        if !self.expect_op("{") {
+            return None;
+        }
+        let mut funcs = Vec::new();
+        loop {
+            self.skip_nl();
+            if self.at_op("}") {
+                self.bump();
+                break;
+            }
+            if self.at_eof() {
+                self.diag_here("'এক্সটার্ন' বন্ধ হয়নি — '}' পাওয়া যায়নি".to_string());
+                break;
+            }
+            if !self.eat_kw("ফাংশন") {
+                self.diag_here("'ফাংশন' প্রত্যাশিত".to_string());
+                self.recover_stmt();
+                continue;
+            }
+            let fname = self
+                .expect_ident("'ফাংশন'-এর পরে নাম")
+                .unwrap_or_else(|| Ident { name: "ত্রুটি".to_string(), pos: self.pos() });
+            let mut params = Vec::new();
+            if self.expect_op("(") {
+                if !self.at_op(")") {
+                    loop {
+                        let ty = self.parse_type();
+                        let pname = self
+                            .expect_ident("প্যারামিটারের নাম")
+                            .unwrap_or_else(|| Ident { name: "ত্রুটি".to_string(), pos: self.pos() });
+                        params.push(Param { ty, name: pname });
+                        if !self.eat_op(",") {
+                            break;
+                        }
+                    }
+                }
+                self.expect_op(")");
+            }
+            if !self.at_op("->") {
+                self.diag_here("'->' প্রত্যাশিত — এক্সটার্ন ফাংশনের রিটার্ন টাইপ আবশ্যক".to_string());
+            }
+            self.eat_op("->");
+            let ret = self.parse_type();
+            self.end_stmt();
+            funcs.push(ExternFn { name: fname, params, ret });
+        }
+        Some(ExternBlock { abi, pos, funcs })
     }
 
     fn parse_const_tail(&mut self) -> Option<ConstDecl> {
@@ -1265,6 +1336,7 @@ pub fn parse(tokens: Vec<Token>) -> (Program, Vec<Diagnostic>) {
                 structs: Vec::new(),
                 enums: Vec::new(),
                 funcs: Vec::new(),
+                externs: Vec::new(),
                 consts: Vec::new(),
                 app: None,
             },

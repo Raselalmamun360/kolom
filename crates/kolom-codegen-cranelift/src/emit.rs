@@ -3499,6 +3499,28 @@ pub fn emit_for(prog: &Program, target: crate::link::Target) -> Result<Vec<u8>, 
         gen.funcs.insert(f.name.name.clone(), FuncInfo { id, params, ret });
     }
 
+    // এক্সটার্ন ফাংশন — declared as a Cranelift *import* (the symbol is
+    // supplied by whatever the final link brings in, same mechanism the
+    // hand-written kolom-runtime imports below already use), and dropped
+    // into the same `gen.funcs` table as ordinary functions under its
+    // *unmangled* name — the exact C symbol the user wrote, since it has to
+    // match whatever `#[no_mangle] extern "C" fn ...` actually linked in.
+    // No separate call-dispatch path needed: `lower_call` already just does
+    // `self.funcs.get(name)` and emits a Cranelift `call` to whatever
+    // `FuncId` it finds, Local or Import alike.
+    for eb in &prog.externs {
+        for ef in &eb.funcs {
+            let params: Vec<Ty> = ef.params.iter().map(|p| resolve_type(&p.ty)).collect();
+            let ret = resolve_type(&ef.ret);
+            let sig = gen.make_signature(&params, &ret)?;
+            let id = gen
+                .module
+                .declare_function(&ef.name.name, Linkage::Import, &sig)
+                .map_err(|e| e.to_string())?;
+            gen.funcs.insert(ef.name.name.clone(), FuncInfo { id, params, ret });
+        }
+    }
+
     let mut main_sig = gen.module.make_signature();
     main_sig.returns.push(AbiParam::new(types::I32));
     let main_id = gen.module.declare_function("main", Linkage::Export, &main_sig).map_err(|e| e.to_string())?;

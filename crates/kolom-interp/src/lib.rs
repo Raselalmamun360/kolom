@@ -153,6 +153,12 @@ struct Interp<'o> {
     /// just "a name that constructs a tagged value" — no need to track
     /// which এনাম it belongs to.
     variants: HashMap<String, usize>,
+    /// Names declared in an `এক্সটার্ন` block. The interpreter has no C ABI
+    /// marshaling layer (unlike native codegen, where `এক্সটার্ন` becomes an
+    /// ordinary Cranelift import — see kolom-codegen-cranelift), so calling
+    /// one here is a clear, specific error rather than the interpreter
+    /// pretending the name doesn't exist at all.
+    extern_funcs: HashSet<String>,
     argv: Vec<String>,
 }
 
@@ -192,6 +198,7 @@ pub fn run_with_io(
         net_next: 1,
         structs: HashMap::new(),
         variants: HashMap::new(),
+        extern_funcs: HashSet::new(),
         argv,
     };
     for s in &prog.structs {
@@ -201,6 +208,11 @@ pub fn run_with_io(
     for en in &prog.enums {
         for (vname, payload) in &en.variants {
             it.variants.insert(vname.name.clone(), payload.len());
+        }
+    }
+    for eb in &prog.externs {
+        for ef in &eb.funcs {
+            it.extern_funcs.insert(ef.name.name.clone());
         }
     }
     for f in &prog.funcs {
@@ -1990,7 +2002,18 @@ impl<'o> Interp<'o> {
     fn call_named_fn(&mut self, name: &str, pos: Pos, args: &[Expr]) -> Result<Value, InterpError> {
         let f = match self.funcs.get(name) {
             Some(f) => Rc::clone(f),
-            None => return Err(err(pos, format!("অজানা ফাংশন '{}'", name))),
+            None => {
+                if self.extern_funcs.contains(name) {
+                    return Err(err(
+                        pos,
+                        format!(
+                            "'{}' একটি 'এক্সটার্ন' ফাংশন — শুধু নেটিভ কম্পাইলে (কলম বিল্ড) কল করা যায়, ইন্টারপ্রেটারে নয়",
+                            name
+                        ),
+                    ));
+                }
+                return Err(err(pos, format!("অজানা ফাংশন '{}'", name)));
+            }
         };
         self.call_func_decl(&f, &f.name.name, pos, args)
     }

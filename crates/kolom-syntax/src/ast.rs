@@ -255,12 +255,33 @@ pub struct TryCatchStmt {
     pub handler: Block,
 }
 
+/// One `ফাংশন` signature inside an `এক্সটার্ন` block — no body, since the
+/// implementation is native code the final link supplies (already
+/// statically linked into every Kolom binary via kolom-runtime, for the
+/// symbols the toolchain itself exposes).
+#[derive(Debug, Clone)]
+pub struct ExternFn {
+    pub name: Ident,
+    pub params: Vec<Param>,
+    pub ret: TypeExpr,
+}
+
+/// `এক্সটার্ন "C" { ... }` — `abi` is the quoted string (only `"C"` is
+/// meaningful today; anything else is a sema error).
+#[derive(Debug, Clone)]
+pub struct ExternBlock {
+    pub abi: String,
+    pub pos: Pos,
+    pub funcs: Vec<ExternFn>,
+}
+
 #[derive(Debug, Clone)]
 pub struct Program {
     pub imports: Vec<Ident>,
     pub structs: Vec<StructDecl>,
     pub enums: Vec<EnumDecl>,
     pub funcs: Vec<Rc<FuncDecl>>,
+    pub externs: Vec<ExternBlock>,
     pub consts: Vec<ConstDecl>,
     pub app: Option<AppDecl>,
 }
