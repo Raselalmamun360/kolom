@@ -2073,10 +2073,17 @@ impl Ck {
                     Ty::Bool
                 } else if lt == Ty::Txt && rt == Ty::Txt {
                     Ty::Bool
+                } else if lt == Ty::Ch && rt == Ty::Ch {
+                    // Ordinal comparison by Unicode scalar value, same as
+                    // Rust's `char: Ord` — a lexer written in Kolom needs
+                    // range checks like `c >= '০' এবং c <= '৯'` for digit/
+                    // Unicode-block classification, exactly the technique
+                    // kolom-lexer itself uses (`is_bangla_block` etc.).
+                    Ty::Bool
                 } else {
                     self.err(
                         pos,
-                        format!("তুলনায় সংখ্যা বা লেখা প্রত্যাশিত — '{}' বনাম '{}'", lt, rt),
+                        format!("তুলনায় সংখ্যা, লেখা বা অক্ষর প্রত্যাশিত — '{}' বনাম '{}'", lt, rt),
                     );
                     Ty::Err
                 }

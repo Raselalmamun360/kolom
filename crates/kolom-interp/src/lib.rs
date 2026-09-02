@@ -756,6 +756,15 @@ impl<'o> Interp<'o> {
                         _ => unreachable!(),
                     }));
                 }
+                if let (Value::Ch(a), Value::Ch(b)) = (&l, &r) {
+                    return Ok(Value::Bool(match op {
+                        BinOp::Lt => a < b,
+                        BinOp::Gt => a > b,
+                        BinOp::Le => a <= b,
+                        BinOp::Ge => a >= b,
+                        _ => unreachable!(),
+                    }));
+                }
                 let (a, b) = numeric_pair(l, r, pos)?;
                 Ok(Value::Bool(match op {
                     BinOp::Lt => a < b,
