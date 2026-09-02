@@ -191,3 +191,37 @@ fn docs_contain_no_devanagari() {
     }
     assert!(hits.is_empty(), "Devanagari found in documentation:\n\n{}\n", hits.join("\n"));
 }
+
+/// A keyword landing in `kolom_lexer::KEYWORDS` without also landing in the
+/// reserved-keyword lists (`language.md` §১৬, `grammer.md` §৫.১) leaves a
+/// program author with no way to discover it's reserved short of hitting a
+/// confusing parse error — and it happened for real: এনাম/মিলাও/এক্সটার্ন all
+/// shipped in the lexer while those two sections stayed exactly as they were
+/// before those features existed. A substring check (not scoped to those
+/// specific sections — locating them by header text is more brittle than
+/// this is worth) is weak for very short keywords (`না` can appear inside
+/// unrelated words), but it is exactly the check that would have caught the
+/// three that actually went missing, and costs nothing to keep running.
+#[test]
+fn every_lexer_keyword_appears_in_reserved_keyword_docs() {
+    let language_md = std::fs::read_to_string(docs_root().join("docs").join("language.md")).unwrap();
+    let grammer_md = std::fs::read_to_string(docs_root().join("docs").join("grammer.md")).unwrap();
+
+    let mut missing = Vec::new();
+    for kw in kolom_lexer::KEYWORDS {
+        let in_language = language_md.contains(kw);
+        let in_grammer = grammer_md.contains(kw);
+        if !in_language || !in_grammer {
+            missing.push(format!(
+                "'{kw}' — language.md: {}, grammer.md: {}",
+                if in_language { "আছে" } else { "নেই" },
+                if in_grammer { "আছে" } else { "নেই" },
+            ));
+        }
+    }
+    assert!(
+        missing.is_empty(),
+        "keyword(s) missing from the reserved-keyword docs:\n{}\n",
+        missing.join("\n")
+    );
+}

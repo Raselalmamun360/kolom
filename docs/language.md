@@ -572,6 +572,8 @@ git = "https://github.com/example/sohayok"
 প্রতি
 
 তথ্য
+এনাম
+মিলাও
 
 বিরতি
 চলবে
@@ -580,6 +582,7 @@ git = "https://github.com/example/sohayok"
 ধরো
 
 ইম্পোর্ট
+এক্সটার্ন
 
 সত্য
 মিথ্যা
