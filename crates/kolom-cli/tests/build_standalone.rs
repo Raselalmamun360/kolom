@@ -202,6 +202,37 @@ fn build_extern_ffi_links_and_calls_real_symbol() {
     assert_eq!(norm(&got), "120\n5040\n", "kl_math_factorial via এক্সটার্ন did not link/call correctly");
 }
 
+/// Regression test for a native STATUS_STACK_OVERFLOW crash found during a
+/// pre-v2.0 completeness pass (docs/v2-prerequisites.md §৬): a natively-
+/// compiled recursive Kolom function overflowed PE's default stack reserve
+/// (~1MB) at only ~15,000-25,000 frames deep, silently — no message at all,
+/// unlike the interpreter's Rust-runtime-provided guard-page handler (fixed
+/// separately, see `run_on_deep_stack` in `main.rs` and `deep_recursion.rs`).
+/// This is the same failure class in the *other* backend, and arguably the
+/// more important one for v2.0: a self-hosted compiler is exactly the kind
+/// of recursive-descent-parsing, recursive-AST-walking program that would
+/// hit it, and self-hosting's whole point is to eventually run natively,
+/// not interpreted. Fixed in `kolom-codegen-cranelift/src/link.rs` with a
+/// `--stack` reserve on the Windows link command — confirmed by hand up to
+/// 1,000,000 frames before landing this as a permanent, smaller-depth test.
+#[test]
+fn build_deep_recursion_does_not_overflow_native_stack() {
+    let dir = std::env::temp_dir().join("kolom-native-stack-test");
+    let _ = std::fs::create_dir_all(&dir);
+    let path = dir.join("main.ক");
+    std::fs::write(
+        &path,
+        "ফাংশন গণনা(সংখ্যা n) -> সংখ্যা {\n\
+            যদি (n <= ০) {\n                রিটার্ন ০\n            }\n\
+            রিটার্ন ১ + গণনা(n - ১)\n\
+        }\n\
+        অ্যাপ {\n            লেখো(লেখায়(গণনা(100000)))\n        }\n",
+    )
+    .unwrap();
+    let got = build_and_run(&path);
+    assert_eq!(got.trim(), "100000", "natively-compiled recursion at depth 100000 crashed or gave the wrong answer");
+}
+
 // `55_module_stress` (docs/v2-prerequisites.md §৮) deliberately mixes
 // এনাম/মিলাও, জেনারিক্স, and first-class function values with এক্সটার্ন —
 // and only এক্সটার্ন is native-codegen-ready today (see §১/§৩/§৪'s "নেটিভ

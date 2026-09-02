@@ -500,6 +500,19 @@ pub fn link_executable_for(target: Target, obj_path: &Path, exe_path: &Path) -> 
                 None => return err("MinGW-এর 'crt2.o' পাওয়া যায়নি — sysroot/lib অসম্পূর্ণ"),
             };
             cmd.arg("-m").arg("i386pep").arg("--subsystem").arg("console");
+            // PE's default stack reserve (~1MB, whatever this lld build's
+            // built-in default is) overflows a plain recursive Kolom
+            // function at only ~15,000-25,000 frames deep — confirmed by
+            // building and running one (STATUS_STACK_OVERFLOW, no message
+            // at all: native code has none of the interpreter's guard-page
+            // handler, see run_on_deep_stack in kolom-cli). A self-hosted,
+            // natively-compiled compiler doing recursive-descent parsing or
+            // recursive AST walks over its own source is exactly the
+            // program shape that would hit this. --stack only *reserves*
+            // address space (committed on demand via the same guard-page
+            // growth mechanism), so a generous reserve costs nothing that
+            // isn't actually used.
+            cmd.arg("--stack").arg("67108864");
             cmd.arg(&crt2);
             if let Some(p) = find_obj("crtbegin.o") {
                 cmd.arg(p);
