@@ -1841,6 +1841,25 @@ impl<'o> Interp<'o> {
             });
             return Ok(Value::Arr(Rc::new(RefCell::new(items))));
         }
+        if name == "যোগ_করো" {
+            if args.len() != 2 {
+                return Err(err(
+                    pos,
+                    format!(
+                        "'যোগ_করো' ২টি আর্গুমেন্ট নেয়, {}টি পেয়েছে",
+                        bn_num(args.len() as u32)
+                    ),
+                ));
+            }
+            let v = self.eval(&args[0])?;
+            let arr = match v {
+                Value::Arr(a) => a,
+                _ => return Err(err(pos, "'যোগ_করো' একটা অ্যারে নেয়")),
+            };
+            let item = self.eval(&args[1])?;
+            arr.borrow_mut().push(item);
+            return Ok(Value::Null);
+        }
         if name == "শেয়ার_করো" {
             if args.len() != 1 {
                 return Err(err(

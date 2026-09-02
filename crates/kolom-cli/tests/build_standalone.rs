@@ -188,6 +188,44 @@ fn build_arrays_without_any_c_compiler() {
     assert_fixture_matches_reference("07_arrays");
 }
 
+/// Regression test for a real memory-corruption bug in `যোগ_করো`'s first
+/// implementation (found during a pre-v2.0 "how would a self-hosted lexer's
+/// growing token list perform" audit, docs/v2-prerequisites.md §৬): native
+/// `যোগ_করো` called `kl_arr_push`, which is fixed-capacity by contract
+/// (`কলom-runtime`'s own module doc: "caller guarantees len < cap" — used
+/// elsewhere only to fill an array literal already allocated at its exact
+/// final size) — pushing past an array's starting capacity of 0 wrote past
+/// the allocation, corrupting heap metadata. A handful of pushes survived
+/// by luck (small overwrites rarely disturb allocator bookkeeping); 10,000
+/// string pushes reliably crashed with STATUS_HEAP_CORRUPTION. Fixed with a
+/// new `kl_arr_push_grow` runtime entry point (real amortized doubling,
+/// returns the possibly-relocated pointer for codegen to write back — see
+/// `lower_push` in kolom-codegen-cranelift). This test pushes 200,000
+/// heap-backed (`লেখা`) elements — large enough that the old bug reliably
+/// crashed and small enough to run in well under a second now.
+#[test]
+fn build_array_push_grows_correctly_at_scale() {
+    let dir = std::env::temp_dir().join("kolom-array-push-test");
+    let _ = std::fs::create_dir_all(&dir);
+    let path = dir.join("main.ক");
+    std::fs::write(
+        &path,
+        "অ্যাপ {\n\
+            ধরি v: লেখা[] = []\n\
+            ধরি i = ০\n\
+            যতক্ষণ (i < 200000) {\n                যোগ_করো(v, \"টোকেন\")\n                i = i + ১\n            }\n\
+            লেখো(লেখায়(দৈর্ঘ্য(v)))\n            লেখো(v[০])\n            লেখো(v[199999])\n        }\n",
+    )
+    .unwrap();
+    let got = build_and_run(&path);
+    let norm = |s: &str| s.replace("\r\n", "\n");
+    assert_eq!(
+        norm(&got),
+        "200000\nটোকেন\nটোকেন\n",
+        "যোগ_করো did not grow/refcount correctly at scale"
+    );
+}
+
 /// `54_extern_ffi` calls a real kolom-runtime symbol (already statically
 /// linked into every native Kolom binary) through a user-written `এক্সটার্ন
 /// "C"` block — proving the declaration actually resolves and links, not

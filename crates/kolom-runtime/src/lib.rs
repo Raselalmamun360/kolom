@@ -1,7 +1,7 @@
 pub mod ui;
 pub mod console;
 
-use std::alloc::{alloc, dealloc, Layout};
+use std::alloc::{alloc, dealloc, realloc, Layout};
 use std::io::{Read, Write};
 
 fn write_line(bytes: &[u8]) {
@@ -358,11 +358,23 @@ pub extern "C" fn kl_bool_to_text(v: i8) -> *mut u8 {
 // ---------------------------------------------------------------------------
 // Array: [rc: i64][len: i64][cap: i64][elem_size: i64][drop_elem: i64][data...]
 // `drop_elem` is a Cranelift-emitted `extern "C" fn(*mut u8)` address (or 0),
-// called on each element when the array's refcount reaches zero. Kolom
-// arrays are always constructed pre-sized to their final length (literals
-// and concat both know the target length upfront), so `kl_arr_push` never
-// needs to grow/realloc — that's a deliberate M2 simplification, not a
-// general-purpose growable-vector runtime yet.
+// called on each element when the array's refcount reaches zero.
+//
+// Two push entry points, deliberately different contracts:
+//   - `kl_arr_push` — fixed-capacity, caller (codegen) guarantees `len <
+//     cap` by always constructing the array at its final known length
+//     first (array literals, `kl_arr_concat`'s output). Never reallocates,
+//     so the pointer never changes — safe to keep calling against a
+//     pointer already read into a local.
+//   - `kl_arr_push_grow` — real amortized growth for যোগ_করো, backing a
+//     genuinely open-ended list (unknown final length, e.g. a self-hosted
+//     lexer's token list). May reallocate; returns the (possibly new)
+//     pointer, which the caller MUST write back into wherever it holds the
+//     array. Calling `kl_arr_push` against an array meant to grow open-
+//     endedly is a real bug that was shipped and caught here — writes past
+//     a zero/undersized `cap` corrupt adjacent heap memory, which small
+//     arrays can survive by luck (a handful of pushes rarely disturbs
+//     allocator metadata) while a few thousand reliably don't.
 // ---------------------------------------------------------------------------
 
 const ARR_HEADER: usize = 40;
@@ -420,6 +432,35 @@ pub extern "C" fn kl_arr_push(p: *mut u8, elem: *const u8) {
         let es = arr_elem_size(p);
         std::ptr::copy_nonoverlapping(elem, arr_data(p).add((len * es) as usize), es as usize);
         (p.add(8) as *mut i64).write(len + 1);
+    }
+}
+
+/// True amortized-growth push for `যোগ_করো` — unlike `kl_arr_push` above,
+/// this one is allowed to see `len == cap` and grows to make room (doubling,
+/// starting at 4, the standard amortized-O(1) strategy — same idea as
+/// Rust's `Vec::push`). **Returns the array's pointer, which may have
+/// changed** if a reallocation happened; the caller (codegen) must write
+/// this back into wherever it holds the array — an old pointer to a grown
+/// array is exactly as stale as an old reference into a reallocated `Vec`.
+#[no_mangle]
+pub extern "C" fn kl_arr_push_grow(p: *mut u8, elem: *const u8) -> *mut u8 {
+    unsafe {
+        let len = kl_arr_len(p);
+        let cap = arr_cap(p);
+        let es = arr_elem_size(p);
+        let out = if len < cap {
+            p
+        } else {
+            let new_cap = if cap == 0 { 4 } else { cap * 2 };
+            let old_layout = Layout::from_size_align(ARR_HEADER + (cap as usize) * (es as usize), 8).unwrap();
+            let new_size = ARR_HEADER + (new_cap as usize) * (es as usize);
+            let new_p = realloc(p, old_layout, new_size);
+            (new_p.add(16) as *mut i64).write(new_cap);
+            new_p
+        };
+        std::ptr::copy_nonoverlapping(elem, arr_data(out).add((len * es) as usize), es as usize);
+        (out.add(8) as *mut i64).write(len + 1);
+        out
     }
 }
 

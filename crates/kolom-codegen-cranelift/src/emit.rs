@@ -298,6 +298,7 @@ pub struct Gen {
     arr_len: FuncId,
     arr_get_ptr: FuncId,
     arr_push: FuncId,
+    arr_push_grow: FuncId,
     arr_concat: FuncId,
     arr_decref: FuncId,
     shared_new: FuncId,
@@ -769,6 +770,39 @@ impl Gen {
         }
     }
 
+    /// `যোগ_করো(arr, item)` — mutates `arr` in place via `kl_arr_push_grow`,
+    /// which does real amortized-doubling growth (unlike `kl_arr_push`,
+    /// used elsewhere only to fill an array literal already allocated at
+    /// its exact final size — see the module doc in kolom-runtime). Growth
+    /// may `realloc`, changing the array's pointer, so `arr` must be a
+    /// plain local variable: the (possibly new) pointer is written straight
+    /// back into it with `def_var`, exactly like `lower_assign`'s ম্যাপ
+    /// index-assignment case already does for the same reason (a map insert
+    /// can also relocate the backing storage).
+    fn lower_push(&mut self, b: &mut FunctionBuilder, args: &[Expr], env: &mut Env) -> Result<CVal, String> {
+        if args.len() != 2 {
+            return Err("M2 codegen: যোগ_করো() ঠিক দুইটি আর্গুমেন্ট নেয়".into());
+        }
+        let id = match &args[0].kind {
+            ExprKind::Ident(id) => id,
+            _ => return Err("M2 codegen: যোগ_করো()-এর প্রথম আর্গুমেন্ট একটি সাধারণ ভ্যারিয়েবল হতে হবে".into()),
+        };
+        let sym = env.lookup(&id.name).ok_or_else(|| format!("অজানা ভ্যারিয়েবল '{}'", id.name))?;
+        if !matches!(sym.ty, Ty::Arr(_)) {
+            return Err("M2 codegen: যোগ_করো() একটি অ্যারে নেয়".into());
+        }
+        let arr_ptr = b.use_var(sym.var);
+        let item = self.lower_expr_for_binding(b, &args[1], env)?;
+        let slot = b.create_sized_stack_slot(StackSlotData::new(StackSlotKind::ExplicitSlot, 8, 0));
+        let addr = b.ins().stack_addr(self.ptr_ty, slot, 0);
+        self.store_cval(b, &item, addr, 0);
+        let pushf = self.module.declare_func_in_func(self.arr_push_grow, b.func);
+        let call = b.ins().call(pushf, &[arr_ptr, addr]);
+        let new_ptr = b.inst_results(call)[0];
+        b.def_var(sym.var, new_ptr);
+        Ok(CVal::Void)
+    }
+
     fn lower_to_text(&mut self, b: &mut FunctionBuilder, args: &[Expr], env: &mut Env) -> Result<CVal, String> {
         if args.len() != 1 {
             return Err("M2 codegen: লেখায়() ঠিক একটি আর্গুমেন্ট নেয়".into());
@@ -1230,6 +1264,7 @@ impl Gen {
                             "দৈর্ঘ্য" => return self.lower_length(b, args, env),
                             "কপি" => return self.lower_copy(b, args, env),
                             "সাজাও" => return self.lower_sort(b, args, env),
+                            "যোগ_করো" => return self.lower_push(b, args, env),
                             "লেখায়" => return self.lower_to_text(b, args, env),
                             "সংখ্যায়" => return self.lower_parse(b, args, env, false),
                             "দশমিকে" => return self.lower_parse(b, args, env, true),
@@ -3170,6 +3205,7 @@ pub fn emit_for(prog: &Program, target: crate::link::Target) -> Result<Vec<u8>, 
     let arr_len = declare_import(&mut module, "kl_arr_len", &[ptr_ty], &[i64t])?;
     let arr_get_ptr = declare_import(&mut module, "kl_arr_get_ptr", &[ptr_ty, i64t], &[ptr_ty])?;
     let arr_push = declare_import(&mut module, "kl_arr_push", &[ptr_ty, ptr_ty], &[])?;
+    let arr_push_grow = declare_import(&mut module, "kl_arr_push_grow", &[ptr_ty, ptr_ty], &[ptr_ty])?;
     let arr_concat = declare_import(&mut module, "kl_arr_concat", &[ptr_ty, ptr_ty], &[ptr_ty])?;
     let arr_decref = declare_import(&mut module, "kl_arr_decref", &[ptr_ty], &[])?;
     let shared_new = declare_import(&mut module, "kl_shared_new", &[i64t, ptr_ty], &[ptr_ty])?;
@@ -3440,6 +3476,7 @@ pub fn emit_for(prog: &Program, target: crate::link::Target) -> Result<Vec<u8>, 
         arr_len,
         arr_get_ptr,
         arr_push,
+        arr_push_grow,
         arr_concat,
         arr_decref,
         shared_new,
