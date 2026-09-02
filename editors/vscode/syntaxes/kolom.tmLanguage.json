@@ -14,6 +14,7 @@
     { "include": "#constants" },
     { "include": "#function-declaration" },
     { "include": "#struct-declaration" },
+    { "include": "#enum-declaration" },
     { "include": "#function-call" },
     { "include": "#operators" },
     { "include": "#punctuation" }
@@ -70,12 +71,12 @@
         {
           "comment": "declarations",
           "name": "keyword.other.declaration.kolom",
-          "match": "(?<![\\p{L}\\p{Mn}\\p{Mc}\\p{Nd}_])(অ্যাপ|ফাংশন|ধরি|ধ্রুবক|তথ্য|ইম্পোর্ট)(?![\\p{L}\\p{Mn}\\p{Mc}\\p{Nd}_])"
+          "match": "(?<![\\p{L}\\p{Mn}\\p{Mc}\\p{Nd}_])(অ্যাপ|ফাংশন|ধরি|ধ্রুবক|তথ্য|এনাম|এক্সটার্ন|ইম্পোর্ট)(?![\\p{L}\\p{Mn}\\p{Mc}\\p{Nd}_])"
         },
         {
-          "comment": "control flow",
+          "comment": "control flow, and মিলাও (match expression) alongside it for highlighting purposes even though it is grammatically an expression, not a statement",
           "name": "keyword.control.kolom",
-          "match": "(?<![\\p{L}\\p{Mn}\\p{Mc}\\p{Nd}_])(যদি|নাহলে|লুপ|যতক্ষণ|প্রতি|রিটার্ন|বিরতি|চলবে|চেষ্টা|ধরো)(?![\\p{L}\\p{Mn}\\p{Mc}\\p{Nd}_])"
+          "match": "(?<![\\p{L}\\p{Mn}\\p{Mc}\\p{Nd}_])(যদি|নাহলে|লুপ|যতক্ষণ|প্রতি|রিটার্ন|বিরতি|চলবে|চেষ্টা|ধরো|মিলাও)(?![\\p{L}\\p{Mn}\\p{Mc}\\p{Nd}_])"
         },
         {
           "comment": "logical operators spelled as words rather than symbols",
@@ -116,6 +117,13 @@
     "struct-declaration": {
       "comment": "the name right after তথ্য",
       "match": "(?<=তথ্য\\s)\\s*([\\p{L}_][\\p{L}\\p{Mn}\\p{Mc}\\p{Nd}_]*)",
+      "captures": {
+        "1": { "name": "entity.name.type.kolom" }
+      }
+    },
+    "enum-declaration": {
+      "comment": "the name right after এনাম",
+      "match": "(?<=এনাম\\s)\\s*([\\p{L}_][\\p{L}\\p{Mn}\\p{Mc}\\p{Nd}_]*)",
       "captures": {
         "1": { "name": "entity.name.type.kolom" }
       }
