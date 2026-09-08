@@ -624,7 +624,27 @@ impl<'o> Interp<'o> {
                             let (nm, npos) = match name.take() {
                                 Some(x) => x,
                                 None => {
-                                    return Err(err(*cpos, "এটি কলযোগ্য ফাংশন নয়"))
+                                    // No name to look up — the callee is an
+                                    // arbitrary expression (`টেবিল[০](x)`,
+                                    // `d.f(x)`). Call the *value* the chain
+                                    // has produced so far, if it is one.
+                                    // Mirrors the sema side, which type-
+                                    // checks the same shapes.
+                                    match val.take() {
+                                        Some(Value::Func(f)) => {
+                                            let label = f.name.name.clone();
+                                            val = Some(
+                                                self.call_func_decl(&f, &label, *cpos, args)?,
+                                            );
+                                            continue;
+                                        }
+                                        _ => {
+                                            return Err(err(
+                                                *cpos,
+                                                "এটি কলযোগ্য ফাংশন নয়",
+                                            ))
+                                        }
+                                    }
                                 }
                             };
                             // A local variable holding a function value

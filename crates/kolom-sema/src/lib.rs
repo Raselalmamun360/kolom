@@ -532,16 +532,6 @@ impl Ck {
         None
     }
 
-    /// If `var` is a local binding of struct type with a field `field`,
-    /// returns that field's type. Used to tell `struct_var.field` apart from
-    /// `module.item`, which are syntactically identical.
-    fn local_struct_field(&self, var: &str, field: &str) -> Option<Ty> {
-        let b = self.lookup(var)?;
-        let Ty::Struct(sname) = &b.ty else { return None };
-        let fields = self.structs.get(sname)?;
-        fields.iter().find(|(n, _)| n == field).map(|(_, t)| t.clone())
-    }
-
     /// Rejects structs/enums that contain themselves *by value*, directly or
     /// through a chain of struct fields / enum variant payloads — such a
     /// type would need infinite space. Reaching itself through a `শেয়ার`,
@@ -558,7 +548,7 @@ impl Ck {
                 self.err(
                     decl.name.pos,
                     format!(
-                        "'{}' নিজেকেই ধারণ করছে ({}) — অসীম আকার।                          পুনরাবৃত্ত গঠনের জন্য 'শেয়ার {}' বা '{}[]' ব্যবহার করুন",
+                        "'{}' নিজেকেই ধারণ করছে ({}) — অসীম আকার। পুনরাবৃত্ত গঠনের জন্য 'শেয়ার {}' বা '{}[]' ব্যবহার করুন",
                         start, path, start, start
                     ),
                 );
@@ -571,7 +561,7 @@ impl Ck {
                 self.err(
                     decl.name.pos,
                     format!(
-                        "'{}' নিজেকেই ধারণ করছে ({}) — অসীম আকার।                          পুনরাবৃত্ত গঠনের জন্য 'শেয়ার {}' বা '{}[]' ব্যবহার করুন",
+                        "'{}' নিজেকেই ধারণ করছে ({}) — অসীম আকার। পুনরাবৃত্ত গঠনের জন্য 'শেয়ার {}' বা '{}[]' ব্যবহার করুন",
                         start, path, start, start
                     ),
                 );
@@ -757,12 +747,20 @@ impl Ck {
                 self.user_imports.insert(imp.name.clone());
             }
         }
-        // Pass 1: every `তথ্য` name, so field types below may refer to a
-        // struct declared later in the file (and to itself, through a
-        // pointer-like `শেয়ার`/array field).
+        // Pass 1: every `তথ্য` *and* `এনাম` name, so the field/payload types
+        // resolved in pass 2 may refer to a type declared later in the file
+        // (and to itself, through a pointer-like `শেয়ার`/array field). Both
+        // name loops must finish before either body loop starts — collecting
+        // এনাম names only after struct fields were resolved would make
+        // `তথ্য টোকেন { ধরন: টোকেন_ধরন }` an unknown-type error, since
+        // `resolve_type` consults `enum_names`.
         for s in &prog.structs {
             self.struct_names.insert(s.name.name.clone());
             self.struct_type_params.insert(s.name.name.clone(), s.type_params.len());
+        }
+        for e in &prog.enums {
+            self.enum_names.insert(e.name.name.clone());
+            self.enum_type_params.insert(e.name.name.clone(), e.type_params.len());
         }
         // Pass 2: resolve field types now that all names are known. A
         // generic তথ্য's own type parameters are in scope only while its
@@ -783,11 +781,8 @@ impl Ck {
                 );
             }
         }
-        // এনাম: same two-pass forward-reference trick as তথ্য above.
-        for e in &prog.enums {
-            self.enum_names.insert(e.name.name.clone());
-            self.enum_type_params.insert(e.name.name.clone(), e.type_params.len());
-        }
+        // এনাম bodies — the name half of this two-pass trick ran above,
+        // together with তথ্য's.
         for e in &prog.enums {
             self.type_params_in_scope = e.type_params.iter().map(|p| p.name.clone()).collect();
             let variants: Vec<(String, Vec<Ty>)> = e
@@ -1141,7 +1136,13 @@ impl Ck {
     fn check_stmt(&mut self, s: &Stmt) -> Ty {
         match s {
             Stmt::Var(v) => {
-                let t = self.expr(&v.init).unwrap_or(Ty::Unknown);
+                // `None` here means "no type to infer at all" — only an empty
+                // array literal produces it. `Some(Ty::Unknown)` is different:
+                // the type is real but erased (a generic payload), and the
+                // read is deferred to the interpreter, so it needs no
+                // annotation. Keep the two apart before flattening.
+                let inferable = self.expr(&v.init);
+                let t = inferable.clone().unwrap_or(Ty::Unknown);
                 self.try_move_src(&v.init, &v.name.name);
                 let final_ty = match &v.ty {
                     Some(te) => {
@@ -1158,7 +1159,7 @@ impl Ck {
                         ann
                     }
                     None => {
-                        if matches!(t, Ty::Unknown) {
+                        if inferable.is_none() {
                             self.err(
                                 v.name.pos,
                                 "খালি অ্যারের টাইপ অনুমান করা যায় না — ঘোষণায় ': টাইপ[]' দিন"
@@ -1543,20 +1544,42 @@ impl Ck {
                 }
             }
             ExprKind::Qualified { module, name } => {
-                // Check if module is actually a local struct variable → field access
+                // `ক.খ` is a module item only when `ক` is not a local
+                // variable. A local always wins — whatever its type, this is
+                // a field read, and falling through to the module lookup
+                // below would blame a missing `ইম্পোর্ট ক` for it.
                 if let Some(b) = self.lookup(&module.name) {
-                    if let Ty::Struct(sname) = &b.ty {
-                        if let Some(fields) = self.structs.get(sname) {
-                            match fields.iter().find(|(n, _)| n == &name.name) {
-                                Some((_, ft)) => return Some(ft.clone()),
-                                None => {
-                                    self.err(
-                                        name.pos,
-                                        format!("'{}' তথ্যে ফিল্ড '{}' নেই", sname, name.name),
-                                    );
-                                    return Some(Ty::Err);
+                    let bt = b.ty.clone();
+                    match &bt {
+                        Ty::Struct(sname) => {
+                            if let Some(fields) = self.structs.get(sname) {
+                                match fields.iter().find(|(n, _)| n == &name.name) {
+                                    Some((_, ft)) => return Some(ft.clone()),
+                                    None => {
+                                        self.err(
+                                            name.pos,
+                                            format!("'{}' তথ্যে ফিল্ড '{}' নেই", sname, name.name),
+                                        );
+                                        return Some(Ty::Err);
+                                    }
                                 }
                             }
+                            return Some(Ty::Err);
+                        }
+                        // A generic এনাম's payload binding erases to
+                        // `Unknown` — `মিলাও o { কিছু(v) => v.শুরু }` with
+                        // `o: বিকল্প<টোকেন>` cannot name `v`'s type here,
+                        // because `Ty::Enum` carries no type arguments (see
+                        // `resolve_type`: generics are erased, not
+                        // monomorphized). Defer the field read to the
+                        // interpreter rather than reject it.
+                        Ty::Unknown | Ty::Err => return Some(Ty::Unknown),
+                        other => {
+                            self.err(
+                                name.pos,
+                                format!("'{}' টাইপের উপর ফিল্ড অ্যাক্সেস করা যায় না", other),
+                            );
+                            return Some(Ty::Err);
                         }
                     }
                 }
@@ -1656,9 +1679,10 @@ impl Ck {
                     ExprKind::Ident(id) => Some(id.name.clone()),
                     ExprKind::Qualified { module, name } => {
                         // `a.b` is a module item only when `a` is not a local
-                        // struct variable; otherwise it is a field read that
-                        // more suffixes may chain onto (`ব.ভি.মান`).
-                        if self.local_struct_field(&module.name, &name.name).is_some() {
+                        // variable; otherwise it is a field read that more
+                        // suffixes may chain onto (`ব.ভি.মান`) — including
+                        // when `a`'s type is erased to `Unknown` by generics.
+                        if self.lookup(&module.name).is_some() {
                             None
                         } else {
                             // `self.imports` only ever tracks *stdlib*
@@ -1760,7 +1784,19 @@ impl Ck {
                                     None => Ty::Err,
                                 }
                             }
-                            _ => match stdlib_lookup(&module.name, &name.name) {
+                            // A local of erased/poisoned type — the field
+                            // read is deferred, and so is whatever suffix
+                            // chains onto it.
+                            Some(sym) if matches!(&sym.ty, Ty::Unknown | Ty::Err) => Ty::Unknown,
+                            Some(sym) => {
+                                let bt = sym.ty.clone();
+                                self.err(
+                                    name.pos,
+                                    format!("'{}' টাইপের উপর ফিল্ড অ্যাক্সেস করা যায় না", bt),
+                                );
+                                Ty::Err
+                            }
+                            None => match stdlib_lookup(&module.name, &name.name) {
                                 Some(StdSig::Const(t)) => t,
                                 _ => Ty::Unknown,
                             },
@@ -1774,8 +1810,37 @@ impl Ck {
                             let name = match callable.take() {
                                 Some(n) => n,
                                 None => {
-                                    self.err(*cpos, "এটি কলযোগ্য ফাংশন নয়");
-                                    cur = Ty::Err;
+                                    // No name to resolve — the callee is an
+                                    // arbitrary expression (`টেবিল[০](x)`,
+                                    // `d.f(x)`). Dispatch on its *type*
+                                    // instead: any `Ty::Func` value is
+                                    // callable wherever it came from.
+                                    cur = match &cur {
+                                        Ty::Func(params, ret) => {
+                                            let (params, ret) =
+                                                (params.clone(), (**ret).clone());
+                                            let label = format!("{}", cur);
+                                            self.check_call_args(
+                                                &label, &params, ret, *cpos, args,
+                                            )
+                                        }
+                                        // Already-reported error, or a type
+                                        // erased by generics — stay quiet
+                                        // rather than pile on a cascade.
+                                        Ty::Unknown | Ty::Err => {
+                                            for a in args {
+                                                let _ = self.expr(a);
+                                            }
+                                            Ty::Unknown
+                                        }
+                                        _ => {
+                                            self.err(*cpos, "এটি কলযোগ্য ফাংশন নয়");
+                                            for a in args {
+                                                let _ = self.expr(a);
+                                            }
+                                            Ty::Err
+                                        }
+                                    };
                                     continue;
                                 }
                             };
@@ -1794,6 +1859,11 @@ impl Ck {
                             };
                         }
                         Suffix::Field(fname) => {
+                            // `parse_primary` folds `a.b` into `Qualified`,
+                            // so a Field suffix is always the third-or-later
+                            // segment (`a.b.c`) — the base's name no longer
+                            // describes what a following `(` would call.
+                            callable = None;
                             let field_ty = match &cur {
                                 Ty::Struct(sname) => {
                                     match self.structs.get(sname) {
@@ -1968,6 +2038,12 @@ impl Ck {
                                 prev, at
                             ),
                         );
+                    } else if matches!(prev, Ty::Unknown) && !matches!(at, Ty::Unknown | Ty::Err) {
+                        // An arm reading through a generic payload erases to
+                        // `Unknown` and so names no type for the whole
+                        // `মিলাও`. A later concrete arm does — take it, so
+                        // `ধরি ফল = মিলাও ...` still infers something usable.
+                        result = Some(at);
                     }
                 }
             }
