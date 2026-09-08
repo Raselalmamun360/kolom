@@ -759,6 +759,18 @@ impl Ck {
             self.struct_type_params.insert(s.name.name.clone(), s.type_params.len());
         }
         for e in &prog.enums {
+            // `resolve_type` consults `struct_names` first, so an এনাম
+            // sharing a তথ্য's name would silently become unreachable as a
+            // type — the তথ্য would answer to it everywhere, while the
+            // এনাম's variants still constructed values of a type nothing
+            // could name. Duplicate তথ্য names and duplicate এনাম names are
+            // already errors; this is the same clash across the two tables.
+            if self.struct_names.contains(&e.name.name) {
+                self.err(
+                    e.name.pos,
+                    format!("'{}' নামে একটি 'তথ্য' আগেই আছে — এনামের আলাদা নাম দিন", e.name.name),
+                );
+            }
             self.enum_names.insert(e.name.name.clone());
             self.enum_type_params.insert(e.name.name.clone(), e.type_params.len());
         }
