@@ -30,17 +30,15 @@ pub const KEYWORDS: &[&str] = &[
     "অথবা",
     "না",
     "শেয়ার",
+    // `ডিসপ্লে` opens a UI block and stays globally reserved — it is the
+    // one word here that no ordinary program wants back. The widget names
+    // it introduces (টেক্সট, বাটন, সারি, কলাম, …) are *contextual*: the
+    // parser recognizes them only inside a `ডিসপ্লে` block, so everywhere
+    // else they are ordinary identifiers. They are common Bengali nouns —
+    // reserving them globally cost every non-UI program a field or
+    // variable named `কলাম`, `সারি`, `টেক্সট` or `ইনপুট`, which the
+    // self-hosted compiler (deliberately UI-free) hit immediately.
     "ডিসপ্লে",
-    "ক্যানভাস",
-    "টেক্সট",
-    "বাটন",
-    "ইনপুট",
-    "ছবি",
-    "সারি",
-    "কলাম",
-    "কার্ড",
-    "ডায়ালগ",
-    "স্ক্রল",
     "সংখ্যা",
     "দশমিক",
     "লেখা",

@@ -436,6 +436,7 @@ name = "kolom-syntax"
 version = "0.1.0"
 dependencies = [
  "kolom-lexer",
+ "unicode-normalization",
 ]
 
 [[package]]

@@ -91,9 +91,9 @@
       ]
     },
     "widgets": {
-      "comment": "native UI — used like component tags inside a ডিসপ্লে block",
+      "comment": "native UI — contextual keywords: these are widget names only inside a ডিসপ্লে block and ordinary identifiers everywhere else. TextMate cannot track that context, so this rule also requires a following '(' to avoid painting a plain variable of the same name as a widget.",
       "name": "support.class.widget.kolom",
-      "match": "(?<![\\p{L}\\p{Mn}\\p{Mc}\\p{Nd}_])(ডিসপ্লে|ক্যানভাস|টেক্সট|বাটন|ইনপুট|ছবি|সারি|কলাম|কার্ড|ডায়ালগ|স্ক্রল)(?![\\p{L}\\p{Mn}\\p{Mc}\\p{Nd}_])"
+      "match": "(?<![\\p{L}\\p{Mn}\\p{Mc}\\p{Nd}_])(ডিসপ্লে|ক্যানভাস|টেক্সট|বাটন|ইনপুট|ছবি|সারি|কলাম|কার্ড|ডায়ালগ|স্ক্রল)(?![\\p{L}\\p{Mn}\\p{Mc}\\p{Nd}_])(?=\\s*[({])"
     },
     "types": {
       "name": "storage.type.kolom",

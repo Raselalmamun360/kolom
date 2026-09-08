@@ -6,3 +6,7 @@ license = "MIT OR Apache-2.0"
 
 [dependencies]
 kolom-lexer = { path = "../kolom-lexer" }
+
+[dev-dependencies]
+# The widget-name tables must stay NFC; parser.rs asserts it.
+unicode-normalization = "0.1"

@@ -44,10 +44,11 @@ fn keyword_table_is_nfc() {
     }
 }
 
-/// The two keywords the bug actually reached.
+/// `শেয়ার` — one of the two names the bug actually reached, and still a
+/// reserved keyword.
 #[test]
 fn affected_keywords_are_recognized_either_way() {
-    for kw in ["শেয়ার", "ডায়ালগ"] {
+    for kw in ["শেয়ার"] {
         let precomposed = precompose(kw);
         assert_ne!(precomposed, kw, "{kw} should differ once precomposed");
 
@@ -59,6 +60,28 @@ fn affected_keywords_are_recognized_either_way() {
             toks.first().map(|t| &t.kind)
         );
     }
+}
+
+/// `ডায়ালগ` — the other name the bug reached. It is no longer a reserved
+/// keyword (the parser recognizes widget names only inside `ডিসপ্লে`), so it
+/// now lexes as an identifier. The normalization guarantee still has to hold,
+/// and matters *more* than before: the parser picks widgets out by comparing
+/// this identifier's text against its `WIDGETS` table, so a precomposed
+/// spelling that failed to normalize would silently stop being a widget.
+/// `kolom-syntax`'s own tests assert that table is NFC.
+#[test]
+fn precomposed_widget_name_normalizes_to_the_same_identifier() {
+    let name = "ডায়ালগ";
+    let precomposed = precompose(name);
+    assert_ne!(precomposed, name, "{name} should differ once precomposed");
+
+    let (toks, errs) = lex(&precomposed);
+    assert!(errs.is_empty(), "{name}: lex errors: {errs:?}");
+    assert!(
+        matches!(toks.first().map(|t| &t.kind), Some(TokenKind::Ident(s)) if s == name),
+        "{name}: precomposed spelling did not normalize back, got {:?}",
+        toks.first().map(|t| &t.kind)
+    );
 }
 
 /// A declaration using the precomposed spelling must produce exactly the same

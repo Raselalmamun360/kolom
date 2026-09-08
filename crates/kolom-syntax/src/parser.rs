@@ -26,6 +26,10 @@ struct P {
     diags: Vec<Diagnostic>,
     fn_depth: u32,
     loop_depth: u32,
+    /// Non-zero while parsing inside a `ডিসপ্লে` block (including any
+    /// `যদি`/`লুপ` nested in one, and container-widget bodies). Only there
+    /// do the widget names in `WIDGETS` act as keywords — see `parse_stmt`.
+    display_depth: u32,
 }
 
 pub type Diagnostic = kolom_lexer::Diagnostic;
@@ -110,9 +114,13 @@ impl P {
         }
     }
 
-    /// Like `expect_ident`, but also accepts a primitive-type keyword, so a
-    /// stdlib module may share a type's name (`ইম্পোর্ট লেখা`).
-    fn expect_module_name(&mut self, what: &str) -> Option<Ident> {
+    /// A primitive-type keyword sitting in a *member* position — after
+    /// `ইম্পোর্ট`, or as a field name in `তথ্য`/after a `.`. There it can only
+    /// be a name, never a type, so it is read as one: a stdlib module may
+    /// share a type's name (`ইম্পোর্ট লেখা`), and a `তথ্য` may have a field
+    /// called `লেখা` or `সংখ্যা`. Returns `None` when the next token is not
+    /// such a keyword, leaving the caller's ordinary identifier path to run.
+    fn member_keyword(&mut self) -> Option<Ident> {
         if let Some(TokenKind::Kw(k)) = self.kind() {
             if PRIMITIVE_TYPES.contains(k) {
                 let name = k.to_string();
@@ -120,6 +128,15 @@ impl P {
                 self.bump();
                 return Some(Ident { name, pos });
             }
+        }
+        None
+    }
+
+    /// Like `expect_ident`, but also accepts a primitive-type keyword in the
+    /// member positions described on `member_keyword`.
+    fn expect_member_name(&mut self, what: &str) -> Option<Ident> {
+        if let Some(id) = self.member_keyword() {
+            return Some(id);
         }
         self.expect_ident(what)
     }
@@ -201,7 +218,7 @@ impl P {
         while !self.at_eof() {
             if self.at_kw("ইম্পোর্ট") {
                 self.bump();
-                if let Some(id) = self.expect_module_name("'ইম্পোর্ট'-এর পরে মডিউলের নাম") {
+                if let Some(id) = self.expect_member_name("'ইম্পোর্ট'-এর পরে মডিউলের নাম") {
                     prog.imports.push(id);
                 }
                 self.end_stmt();
@@ -282,7 +299,9 @@ impl P {
             }
             if self.at_kw("ডিসপ্লে") {
                 self.bump();
+                self.display_depth += 1;
                 let blk = self.parse_block();
+                self.display_depth -= 1;
                 stmts.push(Stmt::Display(blk));
                 continue;
             }
@@ -333,7 +352,7 @@ impl P {
                 self.diag_here("তথ্য বন্ধ হয়নি — '}' পাওয়া যায়নি".to_string());
                 break;
             }
-            let fname = self.expect_ident("ফিল্ডের নাম")?;
+            let fname = self.expect_member_name("ফিল্ডের নাম")?;
             if !self.eat_op(":") {
                 self.diag_here("':' প্রত্যাশিত — ফিল্ড টাইপ আবশ্যক".to_string());
                 return None;
@@ -681,9 +700,13 @@ impl P {
             return Stmt::TryCatch(TryCatchStmt { body, err_var, handler });
         } else if self.at_op("{") {
             Stmt::Nested(self.parse_block())
-        } else if let Some(TokenKind::Kw(k)) = self.kind().cloned() {
-            if WIDGETS.contains(&k) {
-                let w = self.parse_widget(k);
+        } else if let Some(TokenKind::Ident(name)) = self.kind().cloned() {
+            // Widget names are contextual, not reserved: `কলাম(...)` builds a
+            // column only inside a `ডিসপ্লে` block. Anywhere else — and in
+            // any program with no UI at all — it is an ordinary identifier,
+            // so a struct field or variable may be called `কলাম`.
+            if self.display_depth > 0 && WIDGETS.contains(&name.as_str()) {
+                let w = self.parse_widget(&name);
                 return Stmt::Widget(w);
             }
             let e = self.parse_expr();
@@ -696,7 +719,7 @@ impl P {
         }
     }
 
-    fn parse_widget(&mut self, kw: &'static str) -> WidgetNode {
+    fn parse_widget(&mut self, kw: &str) -> WidgetNode {
         let pos = self.pos();
         self.bump();
         let mut args = Vec::new();
@@ -787,7 +810,9 @@ impl P {
             }
             if self.at_op(".") {
                 self.bump();
-                if let Some(TokenKind::Ident(fname)) = self.kind().cloned() {
+                if let Some(id) = self.member_keyword() {
+                    field = Some(id);
+                } else if let Some(TokenKind::Ident(fname)) = self.kind().cloned() {
                     let fpos = self.pos();
                     self.bump();
                     field = Some(Ident { name: fname, pos: fpos });
@@ -994,7 +1019,9 @@ impl P {
                 sfx.push(Suffix::Index(Box::new(ix), pos));
             } else if self.at_op(".") {
                 self.bump();
-                if let Some(TokenKind::Ident(fname)) = self.kind().cloned() {
+                if let Some(id) = self.member_keyword() {
+                    sfx.push(Suffix::Field(id));
+                } else if let Some(TokenKind::Ident(fname)) = self.kind().cloned() {
                     let fpos = self.pos();
                     self.bump();
                     sfx.push(Suffix::Field(Ident { name: fname, pos: fpos }));
@@ -1349,7 +1376,38 @@ pub fn parse(tokens: Vec<Token>) -> (Program, Vec<Diagnostic>) {
         diags: Vec::new(),
         fn_depth: 0,
         loop_depth: 0,
+        display_depth: 0,
     };
     let prog = p.parse_program();
     (prog, p.diags)
+}
+
+#[cfg(test)]
+mod widget_name_tests {
+    use super::{CONTAINER_WIDGETS, WIDGETS};
+
+    /// The lexer normalizes identifiers to NFC, and `parse_stmt` picks widgets
+    /// out by comparing that normalized text against these tables. An entry in
+    /// any other form could never match, so a widget name typed the
+    /// precomposed way (which several Bengali keyboards emit) would silently
+    /// parse as an ordinary call instead. `kolom-lexer` asserts the same thing
+    /// about `KEYWORDS`; these names left that table when they became
+    /// contextual, so they need their own guard.
+    #[test]
+    fn widget_tables_are_nfc() {
+        use unicode_normalization::UnicodeNormalization;
+        for w in WIDGETS.iter().chain(CONTAINER_WIDGETS.iter()) {
+            let nfc: String = w.nfc().collect();
+            assert_eq!(nfc, **w, "widget name {w:?} is not NFC");
+        }
+    }
+
+    /// Every container widget must also be a widget — otherwise it would take
+    /// a block that `parse_stmt` never lets it reach.
+    #[test]
+    fn container_widgets_are_widgets() {
+        for c in CONTAINER_WIDGETS {
+            assert!(WIDGETS.contains(c), "container widget {c:?} missing from WIDGETS");
+        }
+    }
 }
