@@ -1968,6 +1968,39 @@ impl<'o> Interp<'o> {
                     .map_err(|_| err(pos, format!("'{}' দশমিক নয়", s)))
             };
         }
+        if name == "কোডে" || name == "অক্ষরে" {
+            if args.len() != 1 {
+                return Err(err(
+                    pos,
+                    format!("'{}' ১টি আর্গুমেন্ট নেয়, {}টি পেয়েছে", name, bn_num(args.len() as u32)),
+                ));
+            }
+            let v = self.eval(&args[0])?;
+            return if name == "কোডে" {
+                match v {
+                    Value::Ch(c) => Ok(Value::Num(c as u32 as i64)),
+                    _ => Err(err(pos, "'কোডে' 'অক্ষর' নেয়")),
+                }
+            } else {
+                match v {
+                    // Surrogates and out-of-range values have no character,
+                    // so this is an error rather than a silent replacement —
+                    // the same choice the lexer makes for `\u{...}`.
+                    Value::Num(n) => match u32::try_from(n).ok().and_then(char::from_u32) {
+                        Some(c) => Ok(Value::Ch(c)),
+                        None => Err(err(
+                            pos,
+                            format!(
+                                "{}{} কোনো বৈধ ইউনিকোড অক্ষর নয়",
+                                if n < 0 { "-" } else { "" },
+                                bn_num(n.unsigned_abs().min(u32::MAX as u64) as u32)
+                            ),
+                        )),
+                    },
+                    _ => Err(err(pos, "'অক্ষরে' 'সংখ্যা' নেয়")),
+                }
+            };
+        }
         if name == "ম্যাপ_তৈরি" {
             return Ok(Value::Map(Rc::new(RefCell::new(HashMap::new()))));
         }
