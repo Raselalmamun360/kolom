@@ -1508,10 +1508,32 @@ impl Ck {
                         | "যোগ_করো"
                         | "সংখ্যায়" | "দশমিকে"
                         | "ম্যাপ_তৈরি" | "চাবি_গুলো" | "আছে_কি" | "চাবি_মুছো" | "পড়ো_লাইন"
-                ) || self.structs.contains_key(&id.name)
-                    || self.variant_to_enum.contains_key(&id.name)
-                {
+                ) {
                     return Some(Ty::Unknown);
+                }
+                // A তথ্য or এনাম-variant *name* is not a value — only a
+                // call to it is (`ব্যক্তি("রহিম")`, `লাল()`), and a call
+                // parses as `ExprKind::Postfix`, never reaching this arm.
+                // Reaching it means the constructor call was written
+                // without its parentheses, which used to type as `Unknown`
+                // and fail only when that line ran — the exact shape of bug
+                // এনাম exists to rule out.
+                if self.structs.contains_key(&id.name) {
+                    self.err(
+                        id.pos,
+                        format!("'{}' একটি 'তথ্য' — মান বানাতে '{}(...)' লিখুন", id.name, id.name),
+                    );
+                    return Some(Ty::Err);
+                }
+                if self.variant_to_enum.contains_key(&id.name) {
+                    self.err(
+                        id.pos,
+                        format!(
+                            "'{}' একটি এনাম ভ্যারিয়েন্ট — মান বানাতে '{}()' লিখুন",
+                            id.name, id.name
+                        ),
+                    );
+                    return Some(Ty::Err);
                 }
                 // A bare reference to a declared `ফাংশন`'s name (not
                 // immediately called — a direct call `বর্গ(৫)` parses as
