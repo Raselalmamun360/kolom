@@ -48,7 +48,11 @@ fn main() -> ExitCode {
         Some("install") | Some("ইনস্টল") => cmd_install(),
         Some("remove") | Some("মুছো") => cmd_remove(args.get(1)),
         Some("target") | Some("টার্গেট") => cmd_target(),
-        Some("lex") => cmd_lex(args.get(1)),
+        Some("lex") => {
+            let stable = args.iter().any(|a| a == "--stable");
+            let file = args[1..].iter().find(|a| !a.starts_with("--"));
+            cmd_lex(file, stable)
+        }
         Some("ast") => cmd_ast(args.get(1)),
         Some("version") | Some("--version") | Some("-V") | Some("সংস্করণ") => {
             println!("কলম {}", VERSION);
@@ -482,12 +486,71 @@ fn cmd_target() -> ExitCode {
     ExitCode::SUCCESS
 }
 
-fn cmd_lex(path: Option<&String>) -> ExitCode {
+/// Escapes a payload for the `--stable` dump. Deliberately minimal and
+/// fully specified: a backslash, the three whitespace characters that
+/// would break the line/field structure, and C0/DEL become escapes —
+/// everything else, Bengali included, stays literal UTF-8.
+///
+/// This exists because Rust's `{:?}` is not a specification. It escapes by
+/// `char::is_printable`, which treats Bengali combining marks as
+/// unprintable, so `অ্যাপ` dumps as `"অ\u{9cd}য\u{9be}প"` — every one of
+/// the golden fixtures hits this. Matching that byte-for-byte from a
+/// self-hosted lexer would mean carrying Rust's Unicode printability table
+/// in Kolom forever, and would test formatting rather than lexing.
+fn stable_escape(s: &str) -> String {
+    let mut out = String::with_capacity(s.len());
+    for c in s.chars() {
+        match c {
+            '\\' => out.push_str(r"\\"),
+            '\t' => out.push_str(r"\t"),
+            '\n' => out.push_str(r"\n"),
+            '\r' => out.push_str(r"\r"),
+            c if (c as u32) < 0x20 || c as u32 == 0x7F => {
+                out.push_str(&format!(r"\u{{{:x}}}", c as u32))
+            }
+            c => out.push(c),
+        }
+    }
+    out
+}
+
+/// One tab-separated record per token: line, column, kind tag, payload.
+/// Positions are plain ASCII decimal here — `bn_num` is for humans reading
+/// the default dump, not for a machine diffing this one.
+fn stable_token_line(t: &kolom_lexer::Token) -> String {
+    use kolom_lexer::{NumTok, TokenKind};
+    let (kind, payload) = match &t.kind {
+        TokenKind::Ident(s) => ("IDENT", stable_escape(s)),
+        TokenKind::Kw(k) => ("KW", stable_escape(k)),
+        TokenKind::Num(NumTok::Int(n)) => ("INT", n.to_string()),
+        TokenKind::Num(NumTok::Float(f)) => ("FLOAT", f.to_string()),
+        TokenKind::Str(s) => ("STR", stable_escape(s)),
+        TokenKind::Chr(c) => ("CHR", stable_escape(&c.to_string())),
+        TokenKind::Newline => ("NL", String::new()),
+        TokenKind::Op(o) => ("OP", stable_escape(o)),
+    };
+    format!("{}\t{}\t{}\t{}", t.line, t.col, kind, payload)
+}
+
+fn cmd_lex(path: Option<&String>, stable: bool) -> ExitCode {
     let (src, _file) = match read_source(path) {
         Ok(x) => x,
         Err(c) => return c,
     };
     let (tokens, errs) = lex(&src);
+    if stable {
+        for t in &tokens {
+            println!("{}", stable_token_line(t));
+        }
+        for e in &errs {
+            println!("ERR\t{}\t{}\t{}", e.line, e.col, stable_escape(&e.message));
+        }
+        return if errs.is_empty() {
+            ExitCode::SUCCESS
+        } else {
+            ExitCode::FAILURE
+        };
+    }
     for t in &tokens {
         println!("{:>4}:{:<4} {:?}", t.line, bn_num(t.col), t.kind);
     }
