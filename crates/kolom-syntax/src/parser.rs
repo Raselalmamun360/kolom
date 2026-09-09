@@ -748,7 +748,31 @@ impl P {
         }
     }
 
+    /// Entry point for a `যদি` statement — the only place that should ever
+    /// consume the trailing end-of-statement (newline or `}`/EOF). See
+    /// `parse_if_head` for why that has to live here and not there.
     fn parse_if(&mut self) -> IfStmt {
+        let s = self.parse_if_head();
+        self.end_stmt();
+        s
+    }
+
+    /// Parses `যদি (cond) { .. } [নাহলে যদি ... | নাহলে { .. }]` *without*
+    /// consuming the statement-ending newline. A `নাহলে যদি` chain is a
+    /// right-recursive structure — each link is itself a full `IfStmt` — so
+    /// this recurses into itself for every `elif`. If `end_stmt` were called
+    /// here too (as it originally was, when this and `parse_if` were one
+    /// function), every recursion level would consume it once, but the
+    /// source only has one newline after the whole chain. The chain's
+    /// innermost link would eat the real newline; every level above it
+    /// would then find whatever follows the chain sitting where a newline
+    /// was expected and report a bogus "স্টেটমেন্ট শেষে নতুন লাইন প্রত্যাশিত" —
+    /// which stayed invisible for as long as every `নাহলে যদি` chain in the
+    /// test suite happened to be the last statement in its block, since a
+    /// stray `end_stmt` call right before a `}` is harmless. `parse_if`
+    /// above is the one caller allowed to consume it, exactly once,
+    /// regardless of how many links the chain has.
+    fn parse_if_head(&mut self) -> IfStmt {
         let pos = self.pos();
         self.bump();
         self.expect_op("(");
@@ -757,8 +781,8 @@ impl P {
         let then = self.parse_block();
         let els = if self.eat_kw("নাহলে") {
             if self.at_kw("যদি") {
-                Some(ElseBranch::If(Box::new(self.parse_if())))
-        } else if self.at_op("{") {
+                Some(ElseBranch::If(Box::new(self.parse_if_head())))
+            } else if self.at_op("{") {
                 Some(ElseBranch::Block(self.parse_block()))
             } else {
                 self.diag_here("'নাহলে'-এর পরে 'যদি' বা '{' প্রত্যাশিত".to_string());
@@ -767,7 +791,6 @@ impl P {
         } else {
             None
         };
-        self.end_stmt();
         IfStmt {
             pos,
             cond,
