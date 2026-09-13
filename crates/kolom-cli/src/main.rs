@@ -53,7 +53,11 @@ fn main() -> ExitCode {
             let file = args[1..].iter().find(|a| !a.starts_with("--"));
             cmd_lex(file, stable)
         }
-        Some("ast") => cmd_ast(args.get(1)),
+        Some("ast") => {
+            let stable = args.iter().any(|a| a == "--stable");
+            let file = args[1..].iter().find(|a| !a.starts_with("--"));
+            cmd_ast(file, stable)
+        }
         Some("version") | Some("--version") | Some("-V") | Some("সংস্করণ") => {
             println!("কলম {}", VERSION);
             ExitCode::SUCCESS
@@ -568,7 +572,7 @@ fn cmd_lex(path: Option<&String>, stable: bool) -> ExitCode {
 /// `Debug`) — deterministic, complete, and diffable, which is exactly what
 /// a self-hosted parser needs to be checked against byte-for-byte. See
 /// `docs/v2-prerequisites.md` §৭ and `scripts/diff-dump.ps1`.
-fn cmd_ast(path: Option<&String>) -> ExitCode {
+fn cmd_ast(path: Option<&String>, stable: bool) -> ExitCode {
     let (src, file) = match read_source(path) {
         Ok(x) => x,
         Err(c) => return c,
@@ -583,6 +587,13 @@ fn cmd_ast(path: Option<&String>) -> ExitCode {
         print_diags("ত্রুটি", &file, &parse_errs);
         return ExitCode::FAILURE;
     }
-    println!("{:#?}", prog);
+    if stable {
+        // Stable AST dump format - implementation-neutral for differential testing
+        // Format: node_type\tline\tcol\tpayload
+        // This will be implemented to match the self-hosted parser's output
+        println!("{:#?}", prog); // TODO: Replace with stable format
+    } else {
+        println!("{:#?}", prog);
+    }
     ExitCode::SUCCESS
 }
