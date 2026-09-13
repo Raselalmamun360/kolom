@@ -1,0 +1,12 @@
+{
+  "permissions": {
+    "deny": [
+      "Read(./target/**)",
+      "Read(./dist/**)",
+      "Read(./editors/vscode/node_modules/**)",
+      "Read(./editors/vscode/out/**)",
+      "Read(./উপতথ্য/**)",
+      "Read(./.git/**)"
+    ]
+  }
+}
