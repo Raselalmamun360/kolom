@@ -4,6 +4,7 @@ use std::process::ExitCode;
 use kolom_lexer::{bn_num, format_error, lex};
 
 mod editor;
+mod stable_ast;
 
 const VERSION: &str = "১.০.০";
 
@@ -579,19 +580,24 @@ fn cmd_ast(path: Option<&String>, stable: bool) -> ExitCode {
     };
     let (tokens, lex_errs) = lex(&src);
     if !lex_errs.is_empty() {
-        print_diags("ত্রুটি", &file, &lex_errs);
+        if stable {
+            print!("{}", stable_ast::dump_errors("lex", &lex_errs));
+        } else {
+            print_diags("ত্রুটি", &file, &lex_errs);
+        }
         return ExitCode::FAILURE;
     }
     let (prog, parse_errs) = kolom_syntax::parse(tokens);
     if !parse_errs.is_empty() {
-        print_diags("ত্রুটি", &file, &parse_errs);
+        if stable {
+            print!("{}", stable_ast::dump_errors("parse", &parse_errs));
+        } else {
+            print_diags("ত্রুটি", &file, &parse_errs);
+        }
         return ExitCode::FAILURE;
     }
     if stable {
-        // Stable AST dump format - implementation-neutral for differential testing
-        // Format: node_type\tline\tcol\tpayload
-        // This will be implemented to match the self-hosted parser's output
-        println!("{:#?}", prog); // TODO: Replace with stable format
+        print!("{}", stable_ast::dump(&prog));
     } else {
         println!("{:#?}", prog);
     }
